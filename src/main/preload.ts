@@ -51,6 +51,16 @@ import {
   type ShareDeploymentSelectPersistencePathInput,
 } from '../shared/shareDeployment/constants';
 import { type ShellGetBrowserAppsInput, ShellIpc } from '../shared/shell/constants';
+import {
+  type SiteAnalyticsOptions,
+  type SiteDeploymentQuotaOptions,
+  SiteIpc,
+  type SiteListOptions,
+  type SiteQuotaReservationInput,
+  type SiteUpdateAccessModeInput,
+  type SiteUpdateAccessStatusInput,
+  type SiteUpdateTitleInput,
+} from '../shared/site/constants';
 import { SkinIpc } from '../shared/skin/constants';
 import type {
   SkinApplyResponse,
@@ -760,6 +770,24 @@ contextBridge.exposeInMainWorld('electron', {
       ipcRenderer.invoke(ShareDeploymentIpc.GetPersistence, deploymentId),
     downloadPersistenceArchive: (options: ShareDeploymentDownloadPersistenceInput) =>
       ipcRenderer.invoke(ShareDeploymentIpc.DownloadPersistenceArchive, options),
+  },
+  sites: {
+    list: (options: SiteListOptions = {}) => ipcRenderer.invoke(SiteIpc.List, options),
+    get: (shareId: string) => ipcRenderer.invoke(SiteIpc.Get, shareId),
+    updateTitle: (input: SiteUpdateTitleInput) => ipcRenderer.invoke(SiteIpc.UpdateTitle, input),
+    updateAccessMode: (input: SiteUpdateAccessModeInput) =>
+      ipcRenderer.invoke(SiteIpc.UpdateAccessMode, input),
+    updateAccessStatus: (input: SiteUpdateAccessStatusInput) =>
+      ipcRenderer.invoke(SiteIpc.UpdateAccessStatus, input),
+    delete: (shareId: string) => ipcRenderer.invoke(SiteIpc.Delete, shareId),
+    getAnalytics: (shareId: string, options: SiteAnalyticsOptions = {}) =>
+      ipcRenderer.invoke(SiteIpc.GetAnalytics, shareId, options),
+    getDeploymentQuota: (options: SiteDeploymentQuotaOptions = {}) =>
+      ipcRenderer.invoke(SiteIpc.GetDeploymentQuota, options),
+    createQuotaReservation: (input: SiteQuotaReservationInput) =>
+      ipcRenderer.invoke(SiteIpc.CreateQuotaReservation, input),
+    releaseQuotaReservation: (reservationId: string) =>
+      ipcRenderer.invoke(SiteIpc.ReleaseQuotaReservation, reservationId),
   },
   asr: {
     createRealtimeSession: (options: AsrRealtimeSessionRequest) =>

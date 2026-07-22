@@ -46,6 +46,11 @@ import {
   ShareDeploymentStatus,
 } from '@shared/shareDeployment/constants';
 import { findShareDeploymentPersistencePathConflict } from '@shared/shareDeployment/persistencePaths';
+import {
+  type SiteDeploymentQuota,
+  SiteErrorCode,
+  type SiteQuotaCandidate,
+} from '@shared/site/constants';
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useDispatch, useSelector } from 'react-redux';
@@ -136,6 +141,7 @@ import {
   type OfficePreviewZoomControlsConfig,
 } from './renderers/OfficePreviewActionsContext';
 import { OfficeZoomControls } from './renderers/OfficeZoomControls';
+import SiteQuotaReplacementDialog from './SiteQuotaReplacementDialog';
 
 const t = (key: string) => i18nService.t(key);
 
@@ -298,6 +304,14 @@ interface NodeDeploymentLaunchContext {
   localService: LocalWebService;
   projectDirectory?: string;
   projectCandidates?: ShareDeploymentProjectCandidate[];
+}
+
+interface SiteQuotaDialogState {
+  quota: SiteDeploymentQuota;
+  launchContext: NodeDeploymentLaunchContext;
+  targetShareId?: string;
+  keyword: string;
+  error?: string;
 }
 
 function isNodeDeploymentDialogForLocalService(
@@ -747,6 +761,8 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({
   const [isNodeDeploymentLookupPending, setIsNodeDeploymentLookupPending] = useState(false);
   const [isNodeDeploymentBusy, setIsNodeDeploymentBusy] = useState(false);
   const [isNodeDeploymentAccessUpdating, setIsNodeDeploymentAccessUpdating] = useState(false);
+  const [siteQuotaDialog, setSiteQuotaDialog] = useState<SiteQuotaDialogState | null>(null);
+  const [isSiteQuotaActionBusy, setIsSiteQuotaActionBusy] = useState(false);
   const [isHtmlShareStatusUpdating, setIsHtmlShareStatusUpdating] = useState(false);
   const [htmlShareCopyStatus, setHtmlShareCopyStatus] =
     useState<HtmlShareCopyStatus>(HtmlShareCopyStatus.Idle);
@@ -1941,6 +1957,34 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({
     ],
   );
 
+  const fetchSiteDeploymentQuota = useCallback(async (
+    launchContext: NodeDeploymentLaunchContext,
+    targetShareId?: string,
+    keyword = '',
+    page = 1,
+  ): Promise<SiteDeploymentQuota> => {
+    const result = await window.electron?.sites?.getDeploymentQuota({
+      targetShareId,
+      keyword,
+      page,
+      pageSize: 10,
+    });
+    if (!result?.success || !result.data) {
+      throw new Error(result?.error || t('siteQuotaLoadFailed'));
+    }
+    if (!result.data.allowed) {
+      setNodeDeploymentDialog(null);
+      setIsNodeDeploymentDialogOpen(false);
+      setSiteQuotaDialog({
+        quota: result.data,
+        launchContext,
+        targetShareId,
+        keyword,
+      });
+    }
+    return result.data;
+  }, []);
+
   const handleShareLocalServiceDeployment = useCallback(async (
     launchContext: NodeDeploymentLaunchContext,
   ) => {
@@ -2019,6 +2063,15 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({
         existingDeployment = existing.deployment ?? null;
         rememberNodeDeployment(lookupKey, existingDeployment);
       }
+      const resolvedLaunchContext: NodeDeploymentLaunchContext = {
+        ...launchContext,
+        projectDirectory,
+      };
+      const quota = await fetchSiteDeploymentQuota(
+        resolvedLaunchContext,
+        existingDeployment?.shareId,
+      );
+      if (nodeDeploymentActionRunIdRef.current !== runId || !quota.allowed) return;
       if (existingDeployment) {
         rememberLocalServiceProjectDirectory(
           localService.url,
@@ -2056,6 +2109,7 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({
   }, [
     clearNodeDeploymentLookupDialogTimer,
     ensureArtifactSubscriptionAllowed,
+    fetchSiteDeploymentQuota,
     isHtmlSharing,
     isNodeDeploymentBusy,
     isNodeDeploymentLookupPending,
@@ -2067,6 +2121,76 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({
     resolveNodeDeploymentProjectDirectory,
     sessionId,
   ]);
+
+  const querySiteQuotaCandidates = useCallback(async (keyword: string, page: number) => {
+    const snapshot = siteQuotaDialog;
+    if (!snapshot || isSiteQuotaActionBusy) return;
+    setIsSiteQuotaActionBusy(true);
+    try {
+      const quota = await fetchSiteDeploymentQuota(
+        snapshot.launchContext,
+        snapshot.targetShareId,
+        keyword,
+        page,
+      );
+      setSiteQuotaDialog(previous => previous
+        ? { ...previous, quota, keyword, error: undefined }
+        : previous);
+    } catch (error) {
+      setSiteQuotaDialog(previous => previous
+        ? {
+            ...previous,
+            error: error instanceof Error ? error.message : t('siteQuotaLoadFailed'),
+          }
+        : previous);
+    } finally {
+      setIsSiteQuotaActionBusy(false);
+    }
+  }, [fetchSiteDeploymentQuota, isSiteQuotaActionBusy, siteQuotaDialog]);
+
+  const stopSiteForQuotaAndContinue = useCallback(async (candidate: SiteQuotaCandidate) => {
+    const snapshot = siteQuotaDialog;
+    if (!snapshot || isSiteQuotaActionBusy) return;
+    setIsSiteQuotaActionBusy(true);
+    try {
+      const stopped = await window.electron?.sites?.updateAccessStatus({
+        shareId: candidate.shareId,
+        status: HtmlShareStatus.Disabled,
+      });
+      if (!stopped?.success) {
+        throw new Error(stopped?.error || t('siteQuotaStopFailed'));
+      }
+      const refreshed = await window.electron?.sites?.getDeploymentQuota({
+        targetShareId: snapshot.targetShareId,
+        page: 1,
+        pageSize: 10,
+      });
+      if (!refreshed?.success || !refreshed.data) {
+        throw new Error(refreshed?.error || t('siteQuotaLoadFailed'));
+      }
+      const refreshedQuota = refreshed.data;
+      if (!refreshedQuota.allowed) {
+        setSiteQuotaDialog(previous => previous
+          ? { ...previous, quota: refreshedQuota, keyword: '', error: undefined }
+          : previous);
+        return;
+      }
+      const launchContext = snapshot.launchContext;
+      setSiteQuotaDialog(null);
+      setNodeDeploymentDialog(null);
+      setIsNodeDeploymentDialogOpen(false);
+      window.setTimeout(() => void handleShareLocalServiceDeployment(launchContext), 0);
+    } catch (error) {
+      setSiteQuotaDialog(previous => previous
+        ? {
+            ...previous,
+            error: error instanceof Error ? error.message : t('siteQuotaStopFailed'),
+          }
+        : previous);
+    } finally {
+      setIsSiteQuotaActionBusy(false);
+    }
+  }, [handleShareLocalServiceDeployment, isSiteQuotaActionBusy, siteQuotaDialog]);
 
   useEffect(() => {
     const request = localServiceDeploymentRequest;
@@ -2969,6 +3093,12 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({
     const startCommand = isStaticDeployment
       ? ''
       : currentDialog.startCommand || currentDialog.analysis?.startCommand || 'npm run start';
+    const quotaLaunchContext: NodeDeploymentLaunchContext = {
+      localService: currentDialog.localService,
+      projectDirectory: currentDialog.projectDirectory,
+    };
+    let quotaReservationId: string | undefined;
+    let deploymentAccepted = false;
 
     setIsNodeDeploymentBusy(true);
     setIsNodeDeploymentDialogOpen(true);
@@ -2984,6 +3114,21 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({
         }
       : previous);
     try {
+      const reservation = await window.electron?.sites?.createQuotaReservation({
+        requestKey: window.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
+        targetShareId: currentDialog.deployment?.shareId,
+      });
+      if (!reservation?.success || !reservation.data?.reservationId) {
+        if (reservation?.code === SiteErrorCode.DeploymentQuotaExceeded) {
+          await fetchSiteDeploymentQuota(
+            quotaLaunchContext,
+            currentDialog.deployment?.shareId,
+          );
+          return;
+        }
+        throw new Error(reservation?.error || t('siteQuotaReservationFailed'));
+      }
+      quotaReservationId = reservation.data.reservationId;
       setNodeDeploymentDialog(previous => previous
         ? {
             ...previous,
@@ -3017,11 +3162,20 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({
         persistence: normalizeNodeDeploymentPersistenceForSubmit(currentDialog.persistence),
         persistenceUpdateMode:
           currentDialog.persistenceUpdateMode ?? ShareDeploymentPersistenceUpdateMode.Preserve,
+        quotaReservationId,
       });
       if (nodeDeploymentActionRunIdRef.current !== runId) return;
       if (!result?.success || !result.deployment) {
+        if (result?.code === SiteErrorCode.DeploymentQuotaExceeded) {
+          await fetchSiteDeploymentQuota(
+            quotaLaunchContext,
+            currentDialog.deployment?.shareId,
+          );
+          return;
+        }
         throw new Error(result?.error || t('nodeDeploymentFailedMessage'));
       }
+      deploymentAccepted = true;
       const deployment = result.deployment;
       const accessStatusError = result.accessSyncError;
       rememberLocalServiceProjectDirectory(
@@ -3066,6 +3220,9 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({
           }
         : previous);
     } finally {
+      if (quotaReservationId && !deploymentAccepted) {
+        await window.electron?.sites?.releaseQuotaReservation(quotaReservationId).catch(() => undefined);
+      }
       if (nodeDeploymentActionRunIdRef.current === runId) {
         setIsNodeDeploymentBusy(false);
       }
@@ -3073,6 +3230,7 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({
   }, [
     isNodeDeploymentBusy,
     isNodeDeploymentAccessUpdating,
+    fetchSiteDeploymentQuota,
     nodeDeploymentDialog,
     openNodeDeploymentStatusDialog,
     rememberLocalServiceProjectDirectory,
@@ -4562,6 +4720,18 @@ const ArtifactPanel: React.FC<ArtifactPanelProps> = ({
           reason={subscriptionPrompt.reason}
           onCancel={closeSubscriptionPrompt}
           onSubscribe={openSubscriptionPage}
+        />
+      )}
+      {siteQuotaDialog && (
+        <SiteQuotaReplacementDialog
+          quota={siteQuotaDialog.quota}
+          busy={isSiteQuotaActionBusy}
+          error={siteQuotaDialog.error}
+          onClose={() => {
+            if (!isSiteQuotaActionBusy) setSiteQuotaDialog(null);
+          }}
+          onQuery={(keyword, page) => void querySiteQuotaCandidates(keyword, page)}
+          onStopAndContinue={candidate => void stopSiteForQuotaAndContinue(candidate)}
         />
       )}
       {nodeDeploymentDialog && isNodeDeploymentDialogOpen &&

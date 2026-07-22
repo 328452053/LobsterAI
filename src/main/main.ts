@@ -178,6 +178,7 @@ import {
   registerScheduledTaskHandlers,
 } from './ipcHandlers/scheduledTask';
 import { registerSessionDiagnosticsHandlers } from './ipcHandlers/sessionDiagnostics';
+import { registerSiteIpcHandlers } from './ipcHandlers/site';
 import { registerSkillHandlers } from './ipcHandlers/skills';
 import {
   type CoworkAgentEngine,
@@ -969,6 +970,11 @@ function sanitizeShareDeploymentCreateNodeInput(input: unknown): ShareDeployment
     ),
     targetShareStatus:
       sanitizeHtmlShareConfigurableStatus(source.targetShareStatus) ?? HtmlShareStatus.Live,
+    quotaReservationId: sanitizeOptionalHtmlShareString(
+      source.quotaReservationId,
+      'quotaReservationId',
+      64,
+    ),
   };
 }
 
@@ -10230,6 +10236,11 @@ if (!gotTheLock) {
 
   registerAsrIpcHandlers({
     getAuthTokens,
+    fetchWithAuth,
+    getServerApiBaseUrl,
+  });
+
+  registerSiteIpcHandlers({
     fetchWithAuth,
     getServerApiBaseUrl,
   });
