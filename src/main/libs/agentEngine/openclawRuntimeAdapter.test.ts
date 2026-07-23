@@ -275,6 +275,26 @@ test('resolveOpenClawRuntimeErrorMessage classifies generic error from safe OAut
   })).toContain('OAuth 授权已失效');
 });
 
+test('resolveOpenClawRuntimeErrorMessage identifies expired LobsterAI plan login', () => {
+  expect(resolveOpenClawRuntimeErrorMessage('LLM request failed.', {
+    provider: 'lobsterai-server',
+    model: 'MiniMax-M3',
+    failoverReason: 'auth',
+    httpCode: '401',
+    rawErrorPreview: '401 status code (no body)',
+  })).toContain('登录状态已过期');
+});
+
+test('resolveOpenClawRuntimeErrorMessage keeps LobsterAI HTTP 403 as model access denial', () => {
+  expect(resolveOpenClawRuntimeErrorMessage('LLM request failed.', {
+    provider: 'lobsterai-server',
+    model: 'MiniMax-M3',
+    failoverReason: 'auth',
+    httpCode: '403',
+    rawErrorPreview: '403 Forbidden',
+  })).toContain('无权访问该模型');
+});
+
 test('resolveOpenClawRuntimeErrorMessage classifies generic error from safe model access metadata', () => {
   expect(resolveOpenClawRuntimeErrorMessage('LLM request failed.', {
     provider: 'minimax',

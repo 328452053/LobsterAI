@@ -2,6 +2,12 @@ import { net } from 'electron';
 import http from 'http';
 
 import { isLobsterAIQuotaExhaustedError } from '../../common/coworkErrorClassify';
+import {
+  AuthRefreshOutcome,
+  AuthRefreshReason,
+  type AuthRefreshReason as AuthRefreshReasonValue,
+  type AuthTokenRefreshResult,
+} from '../../shared/auth/constants';
 
 const PROXY_BIND_HOST = '127.0.0.1';
 const RECENT_QUOTA_ERROR_TTL_MS = 30_000;
@@ -13,12 +19,14 @@ let recentQuotaError: OpenClawTokenProxyQuotaError | null = null;
 
 // Injected dependencies
 let tokenGetter: (() => { accessToken: string; refreshToken: string } | null) | null = null;
-let tokenRefresher: ((reason: string) => Promise<string | null>) | null = null;
+let tokenRefresher: (
+  (reason: AuthRefreshReasonValue) => Promise<AuthTokenRefreshResult>
+) | null = null;
 let serverBaseUrlGetter: (() => string) | null = null;
 
 export type OpenClawTokenProxyConfig = {
   getAuthTokens: () => { accessToken: string; refreshToken: string } | null;
-  refreshToken: (reason: string) => Promise<string | null>;
+  refreshToken: (reason: AuthRefreshReasonValue) => Promise<AuthTokenRefreshResult>;
   getServerBaseUrl: () => string;
 };
 
@@ -102,6 +110,28 @@ function collectRequestBody(req: http.IncomingMessage): Promise<Buffer> {
   });
 }
 
+function shouldRefreshLobsterAIToken(status: number): boolean {
+  return status === 401;
+}
+
+function isTemporaryAuthRefreshFailure(result: AuthTokenRefreshResult): boolean {
+  return result.outcome === AuthRefreshOutcome.TransientFailure;
+}
+
+function writeTemporaryAuthRefreshFailure(res: http.ServerResponse): void {
+  res.writeHead(503, {
+    'Content-Type': 'application/json',
+    'Retry-After': '1',
+  });
+  res.end(JSON.stringify({
+    error: {
+      message: 'Login verification is temporarily unavailable. Please retry.',
+      type: 'service_unavailable',
+      code: 'auth_refresh_temporarily_unavailable',
+    },
+  }));
+}
+
 async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   try {
     const tokens = tokenGetter?.();
@@ -123,14 +153,39 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     const upstreamPath = `/api/proxy${req.url || '/'}`;
     const upstreamUrl = `${serverBaseUrl}${upstreamPath}`;
 
-    const result = await forwardRequest(upstreamUrl, req.method || 'POST', tokens.accessToken, upstreamBody, req.headers);
+    let result = await forwardRequest(upstreamUrl, req.method || 'POST', tokens.accessToken, upstreamBody, req.headers);
 
-    if ((result.status === 401 || result.status === 403) && tokenRefresher) {
-      console.log(`[OpenClawTokenProxy] received ${result.status}, attempting token refresh`);
-      const newToken = await tokenRefresher('openclaw-proxy');
-      if (newToken) {
-        const retryResult = await forwardRequest(upstreamUrl, req.method || 'POST', newToken, upstreamBody, req.headers);
+    if (shouldRefreshLobsterAIToken(result.status) && tokenRefresher) {
+      const latestAccessToken = tokenGetter?.()?.accessToken;
+      if (latestAccessToken && latestAccessToken !== tokens.accessToken) {
+        result = await forwardRequest(
+          upstreamUrl,
+          req.method || 'POST',
+          latestAccessToken,
+          upstreamBody,
+          req.headers,
+        );
+        if (result.status !== 401) {
+          pipeResponse(result, res);
+          return;
+        }
+      }
+
+      console.log('[OpenClawTokenProxy] received 401, attempting token refresh');
+      const refreshResult = await tokenRefresher(AuthRefreshReason.OpenClawProxy);
+      if (refreshResult.accessToken) {
+        const retryResult = await forwardRequest(
+          upstreamUrl,
+          req.method || 'POST',
+          refreshResult.accessToken,
+          upstreamBody,
+          req.headers,
+        );
         pipeResponse(retryResult, res);
+        return;
+      }
+      if (isTemporaryAuthRefreshFailure(refreshResult)) {
+        writeTemporaryAuthRefreshFailure(res);
         return;
       }
     }
@@ -687,4 +742,6 @@ export const __openClawTokenProxyTestUtils = {
   pipeNodeReadableResponseWithQuotaScan,
   pipeWebReadableResponseWithQuotaScan,
   pipeStreamingResponseWithQuotaScan,
+  isTemporaryAuthRefreshFailure,
+  shouldRefreshLobsterAIToken,
 };
