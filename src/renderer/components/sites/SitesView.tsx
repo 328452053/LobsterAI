@@ -2,6 +2,7 @@ import {
   ArrowLeftIcon,
   ArrowPathIcon,
   ArrowTopRightOnSquareIcon,
+  ArrowUpTrayIcon,
   ChartBarIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
@@ -11,6 +12,7 @@ import {
   MagnifyingGlassIcon,
   PlusIcon,
   TrashIcon,
+  XMarkIcon,
 } from '@heroicons/react/24/outline';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
@@ -28,6 +30,7 @@ import {
   SiteStatus,
   type SiteStatus as SiteStatusValue,
 } from '../../../shared/site/constants';
+import { copyTextToClipboard } from '../../services/clipboard';
 import { i18nService } from '../../services/i18n';
 import Modal from '../common/Modal';
 import Cog6ToothIcon from '../icons/Cog6ToothIcon';
@@ -104,7 +107,7 @@ const formatAnalyticsDate = (value: string): string => {
 
 const SiteStatusBadge: React.FC<{ status: SiteStatusValue }> = ({ status }) => (
   <span
-    className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ${statusTheme[status]}`}
+    className={`inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium ${statusTheme[status]}`}
   >
     {status === SiteStatus.Online && <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />}
     {status === SiteStatus.Deploying && <ArrowPathIcon className="h-3 w-3 animate-spin" />}
@@ -152,31 +155,30 @@ const EmptyState: React.FC<{
     ['sitesTemplateSurvey', 'sitesTemplateSurveyDescription', 'sitesTemplateSurveyPrompt'],
   ];
   return (
-    <div className="mx-auto mt-12 max-w-3xl rounded-2xl border border-border bg-surface p-8 text-center">
-      <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-orange-500/10 text-orange-500">
-        <GlobeAltIcon className="h-6 w-6" />
+    <div className="mx-auto mt-12 max-w-3xl rounded-xl border border-border bg-surface p-7 text-center">
+      <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
+        <GlobeAltIcon className="h-5 w-5" />
       </div>
-      <h2 className="mt-4 text-base font-semibold text-foreground">
+      <h2 className="mt-3 text-sm font-semibold text-foreground">
         {i18nService.t('sitesEmptyTitle')}
       </h2>
-      <p className="mt-1 text-sm text-secondary">{i18nService.t('sitesEmptyDescription')}</p>
-      <div className="mt-7 text-left">
-        <p className="mb-2 text-xs font-medium text-secondary">
+      <div className="mt-5 text-left">
+        <p className="mb-2 text-xs font-semibold text-foreground">
           {i18nService.t('sitesCreateFromTemplate')}
         </p>
-        <div className="grid grid-cols-2 gap-2.5">
+        <div className="grid grid-cols-2 gap-2">
           {templates.map(([title, description, prompt]) => (
             <button
               key={title}
               type="button"
               disabled={readOnly}
               onClick={() => onCreateSiteByChat(i18nService.t(prompt))}
-              className="rounded-xl border border-border bg-background px-4 py-3 text-left transition-colors hover:border-primary/50 hover:bg-primary/5 disabled:cursor-not-allowed disabled:opacity-50"
+              className="rounded-lg border border-border bg-background px-3.5 py-2.5 text-left transition-colors hover:border-primary/50 hover:bg-primary/5 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <span className="block text-sm font-medium text-foreground">
                 {i18nService.t(title)}
               </span>
-              <span className="mt-1 block text-xs text-secondary">
+              <span className="mt-0.5 block text-xs leading-5 text-secondary">
                 {i18nService.t(description)}
               </span>
             </button>
@@ -220,6 +222,15 @@ const SitesView: React.FC<SitesViewProps> = ({
   const [deleteConfirmText, setDeleteConfirmText] = useState('');
   const [leaveConfirmOpen, setLeaveConfirmOpen] = useState(false);
   const [siteActionMenu, setSiteActionMenu] = useState<SiteActionMenuState | null>(null);
+  const [shareSite, setShareSite] = useState<SiteListItem | null>(null);
+  const [shareSiteDetail, setShareSiteDetail] = useState<SiteDetail | null>(null);
+  const [shareAccessModeDraft, setShareAccessModeDraft] = useState<HtmlShareAccessMode>(
+    HtmlShareAccessMode.Public,
+  );
+  const [shareDialogLoading, setShareDialogLoading] = useState(false);
+  const [shareActionLoading, setShareActionLoading] = useState(false);
+  const [shareError, setShareError] = useState<string | null>(null);
+  const [shareLinkCopied, setShareLinkCopied] = useState(false);
   const [titleDraft, setTitleDraft] = useState('');
   const [accessModeDraft, setAccessModeDraft] = useState<HtmlShareAccessMode>(
     HtmlShareAccessMode.Public,
@@ -227,6 +238,7 @@ const SitesView: React.FC<SitesViewProps> = ({
   const listRequestRef = useRef(0);
   const detailRequestRef = useRef(0);
   const analyticsRequestRef = useRef(0);
+  const shareRequestRef = useRef(0);
   const siteActionMenuRef = useRef<HTMLDivElement>(null);
   const requestedAnalyticsDates = useMemo(
     () => analyticsDateValues(analyticsRange),
@@ -327,6 +339,37 @@ const SitesView: React.FC<SitesViewProps> = ({
     setDetailLoading(false);
   }, []);
 
+  const closeShareDialog = useCallback(() => {
+    shareRequestRef.current += 1;
+    setShareSite(null);
+    setShareSiteDetail(null);
+    setShareDialogLoading(false);
+    setShareActionLoading(false);
+    setShareError(null);
+    setShareLinkCopied(false);
+  }, []);
+
+  const openShareDialog = useCallback(async (site: SiteListItem) => {
+    setSiteActionMenu(null);
+    setShareSite(site);
+    setShareSiteDetail(null);
+    setShareAccessModeDraft(site.accessMode);
+    setShareDialogLoading(true);
+    setShareActionLoading(false);
+    setShareError(null);
+    setShareLinkCopied(false);
+    const requestId = ++shareRequestRef.current;
+    const result = await window.electron.sites.get(site.shareId);
+    if (requestId !== shareRequestRef.current) return;
+    if (result.success && result.data) {
+      setShareSiteDetail(result.data);
+      setShareAccessModeDraft(result.data.accessMode);
+    } else {
+      setShareError(result.error || i18nService.t('sitesShareLoadFailed'));
+    }
+    setShareDialogLoading(false);
+  }, []);
+
   const loadAnalytics = useCallback(async () => {
     if (!selectedSite) return;
     const requestId = ++analyticsRequestRef.current;
@@ -392,6 +435,56 @@ const SitesView: React.FC<SitesViewProps> = ({
     if (result.success && result.data) applyUpdatedSite(result.data);
     else setActionError(result.error || i18nService.t('sitesUpdateFailed'));
     setActionLoading(false);
+  };
+
+  const updateShareAccessMode = async () => {
+    if (
+      !shareSite ||
+      !shareSiteDetail ||
+      shareActionLoading ||
+      shareAccessModeDraft === shareSiteDetail.accessMode
+    )
+      return;
+    setShareActionLoading(true);
+    setShareError(null);
+    setShareLinkCopied(false);
+
+    const result = await window.electron.sites.updateAccessMode({
+      shareId: shareSite.shareId,
+      accessMode: shareAccessModeDraft,
+    });
+    if (!result.success || !result.data) {
+      setShareError(result.error || i18nService.t('sitesUpdateFailed'));
+      setShareActionLoading(false);
+      return;
+    }
+    setShareSite(result.data);
+    setShareSiteDetail(result.data);
+    void loadSites(true);
+    setShareActionLoading(false);
+  };
+
+  const copyShareLink = async () => {
+    if (!shareSite || shareActionLoading) return;
+    setShareActionLoading(true);
+    setShareError(null);
+    setShareLinkCopied(false);
+
+    const siteToShare = shareSiteDetail || shareSite;
+    const shareCode = shareSiteDetail?.shareCode?.trim();
+    if (siteToShare.accessMode === HtmlShareAccessMode.Code && !shareCode) {
+      setShareError(i18nService.t('sitesShareCodeCopyUnavailable'));
+      setShareActionLoading(false);
+      return;
+    }
+    const clipboardText =
+      siteToShare.accessMode === HtmlShareAccessMode.Code
+        ? `${i18nService.t('htmlShareClipboardLinkLabel')}: ${siteToShare.url}\n${i18nService.t('sitesShareCode')}: ${shareCode}`
+        : siteToShare.url;
+    const copied = await copyTextToClipboard(clipboardText);
+    if (copied) setShareLinkCopied(true);
+    else setShareError(i18nService.t('copyFailed'));
+    setShareActionLoading(false);
   };
 
   const updateAccessStatus = async () => {
@@ -463,6 +556,8 @@ const SitesView: React.FC<SitesViewProps> = ({
     const canStop = !readOnly && selectedSite.editableActions.includes(SiteAction.StopAccess);
     const canResume = !readOnly && selectedSite.editableActions.includes(SiteAction.ResumeAccess);
     const canDelete = !readOnly && selectedSite.editableActions.includes(SiteAction.Delete);
+    const requiresResourceRelease =
+      isNode && selectedSite.siteStatus === SiteStatus.Blocked && canStop;
     const hasUnsavedSettings =
       titleDraft.trim() !== selectedSite.title || accessModeDraft !== selectedSite.accessMode;
     const canVisit = selectedSite.siteStatus === SiteStatus.Online;
@@ -765,7 +860,9 @@ const SitesView: React.FC<SitesViewProps> = ({
                     {i18nService.t('sitesAccessControl')}
                   </h2>
                   <p className="mt-1 text-xs text-secondary">
-                    {isNode
+                    {requiresResourceRelease
+                      ? i18nService.t('sitesReleaseResourcesDescription')
+                      : isNode
                       ? i18nService.t('sitesNodeStopDescription')
                       : i18nService.t('sitesStaticStopDescription')}
                   </p>
@@ -777,7 +874,9 @@ const SitesView: React.FC<SitesViewProps> = ({
                       onClick={() => setConfirmAction('stop')}
                       className="h-9 rounded-lg border border-red-500/40 px-3 text-sm font-medium text-red-600 hover:bg-red-500/5"
                     >
-                      {i18nService.t('sitesStopAccess')}
+                      {i18nService.t(
+                        requiresResourceRelease ? 'sitesReleaseResources' : 'sitesStopAccess',
+                      )}
                     </button>
                   )}
                   {canResume && (
@@ -833,12 +932,18 @@ const SitesView: React.FC<SitesViewProps> = ({
         >
           <h2 className="text-base font-semibold text-foreground">
             {confirmAction === 'stop'
-              ? i18nService.t('sitesStopConfirmTitle')
+              ? i18nService.t(
+                  requiresResourceRelease
+                    ? 'sitesReleaseResourcesConfirmTitle'
+                    : 'sitesStopConfirmTitle',
+                )
               : i18nService.t('sitesResumeConfirmTitle')}
           </h2>
           <p className="mt-2 text-sm leading-6 text-secondary">
             {confirmAction === 'stop'
-              ? isNode
+              ? requiresResourceRelease
+                ? i18nService.t('sitesReleaseResourcesConfirm')
+                : isNode
                 ? i18nService.t('sitesNodeStopConfirm')
                 : i18nService.t('sitesStaticStopConfirm')
               : i18nService.t('sitesResumeConfirm')}
@@ -863,7 +968,9 @@ const SitesView: React.FC<SitesViewProps> = ({
                 ? i18nService.t('saving')
                 : i18nService.t(
                     confirmAction === 'stop'
-                      ? 'sitesConfirmStopAccess'
+                      ? requiresResourceRelease
+                        ? 'sitesConfirmReleaseResources'
+                        : 'sitesConfirmStopAccess'
                       : 'sitesConfirmResumeAccess',
                   )}
             </button>
@@ -925,9 +1032,17 @@ const SitesView: React.FC<SitesViewProps> = ({
               type="button"
               disabled={actionLoading || deleteConfirmText !== selectedSite.title}
               onClick={() => void deleteSelectedSite()}
-              className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-40"
+              aria-busy={actionLoading}
+              className="inline-flex min-w-[104px] items-center justify-center gap-1.5 rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-40"
             >
-              {actionLoading ? i18nService.t('saving') : i18nService.t('sitesDeletePermanently')}
+              {actionLoading ? (
+                <>
+                  <ArrowPathIcon className="h-4 w-4 animate-spin" />
+                  {i18nService.t('sitesDeleting')}
+                </>
+              ) : (
+                i18nService.t('sitesDeletePermanently')
+              )}
             </button>
           </div>
         </Modal>
@@ -968,6 +1083,16 @@ const SitesView: React.FC<SitesViewProps> = ({
 
   const totalPages = Math.max(1, Math.ceil(listData.total / PAGE_SIZE));
   const isUnfilteredEmpty = !keyword && !statusFilter && listData.total === 0;
+  const shareCanChangeAccess =
+    !readOnly &&
+    Boolean(shareSiteDetail?.editableActions.includes(SiteAction.ChangeAccessMode));
+  const shareHasAccessChange =
+    Boolean(shareSiteDetail) && shareAccessModeDraft !== shareSiteDetail?.accessMode;
+  const shareCommittedAccessMode = shareSiteDetail?.accessMode ?? shareSite?.accessMode;
+  const shareCopyUnavailable =
+    !shareHasAccessChange &&
+    shareCommittedAccessMode === HtmlShareAccessMode.Code &&
+    !shareSiteDetail?.shareCode;
   const createSiteButton = (compact: boolean) => (
     <button
       type="button"
@@ -982,20 +1107,22 @@ const SitesView: React.FC<SitesViewProps> = ({
   return (
     <div
       data-skin-management-page="true"
-      className="relative z-10 flex h-full min-h-0 flex-col bg-background"
+      className="relative z-10 flex h-full min-h-0 flex-col overflow-x-auto overflow-y-hidden bg-background"
     >
-      <SitesTopBar
-        isSidebarCollapsed={isSidebarCollapsed}
-        onToggleSidebar={onToggleSidebar}
-        updateBadge={updateBadge}
-      />
-      <header className="mx-auto w-full max-w-[1168px] shrink-0 px-6 py-4">
+      <div className="min-w-[720px] shrink-0">
+        <SitesTopBar
+          isSidebarCollapsed={isSidebarCollapsed}
+          onToggleSidebar={onToggleSidebar}
+          updateBadge={updateBadge}
+        />
+      </div>
+      <header className="mx-auto w-full min-w-[720px] max-w-[840px] shrink-0 px-6 py-4">
         <div className="flex items-center justify-between gap-4">
           <p className="text-sm text-secondary">{i18nService.t('sitesSubtitle')}</p>
-          {isUnfilteredEmpty && createSiteButton(false)}
+          {isUnfilteredEmpty && createSiteButton(true)}
         </div>
         {!isUnfilteredEmpty && (
-          <div className="mt-3 flex flex-wrap items-center gap-2.5">
+          <div className="mt-3 flex flex-nowrap items-center gap-2.5">
             <div className="relative min-w-[280px] flex-1">
               <MagnifyingGlassIcon className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-secondary" />
               <input
@@ -1039,108 +1166,128 @@ const SitesView: React.FC<SitesViewProps> = ({
           </div>
         )}
       </header>
-      <main className="mx-auto min-h-0 w-full max-w-[1168px] flex-1 overflow-y-auto px-6 pb-6 [scrollbar-gutter:stable]">
-        {listError && (
-          <div className="mb-3 flex items-center justify-between rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2 text-sm text-red-600">
-            <span>{listError}</span>
-            <button type="button" onClick={() => void loadSites()} className="font-medium">
-              {i18nService.t('retry')}
-            </button>
-          </div>
-        )}
-        {listLoading && listData.list.length === 0 ? (
-          <div className="flex h-64 items-center justify-center text-sm text-secondary">
-            <ArrowPathIcon className="mr-2 h-4 w-4 animate-spin" />
-            {i18nService.t('loading')}
-          </div>
-        ) : isUnfilteredEmpty ? (
-          <EmptyState onCreateSiteByChat={onCreateSiteByChat} readOnly={readOnly} />
-        ) : listData.list.length === 0 ? (
-          <div className="flex h-56 flex-col items-center justify-center text-sm text-secondary">
-            <MagnifyingGlassIcon className="mb-3 h-8 w-8" />
-            {i18nService.t('sitesNoResults')}
-          </div>
-        ) : (
-          <div>
-            <div className="mb-2 flex items-center justify-between px-1">
-              <h2 className="text-xs font-semibold text-foreground">
-                {i18nService.t('sitesMySites')}
-              </h2>
-              <span className="text-[11px] text-secondary">
-                {i18nService.t('sitesRecentlyUpdated')}
-              </span>
+      <main className="min-h-0 w-full min-w-[720px] flex-1 overflow-y-auto [scrollbar-gutter:stable]">
+        <div className="mx-auto w-full max-w-[840px] px-6 pb-6">
+          {listError && (
+            <div className="mb-3 flex items-center justify-between rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2 text-sm text-red-600">
+              <span>{listError}</span>
+              <button type="button" onClick={() => void loadSites()} className="font-medium">
+                {i18nService.t('retry')}
+              </button>
             </div>
-            <div className="space-y-2">
-              {listData.list.map(site => (
-                <div
-                  key={site.shareId}
-                  className="group flex w-full items-center gap-3 rounded-xl border border-border bg-surface px-3.5 py-3 text-left transition-colors hover:border-primary/50 hover:bg-primary/5 focus-within:border-primary/50"
-                >
-                  <button
-                    type="button"
-                    onClick={() => void openSiteDetail(site)}
-                    className="flex min-w-0 flex-1 items-center gap-4 rounded-lg text-left outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
+          )}
+          {listLoading && listData.list.length === 0 ? (
+            <div className="flex h-64 items-center justify-center text-sm text-secondary">
+              <ArrowPathIcon className="mr-2 h-4 w-4 animate-spin" />
+              {i18nService.t('loading')}
+            </div>
+          ) : isUnfilteredEmpty ? (
+            <EmptyState onCreateSiteByChat={onCreateSiteByChat} readOnly={readOnly} />
+          ) : listData.list.length === 0 ? (
+            <div className="flex h-56 flex-col items-center justify-center text-sm text-secondary">
+              <MagnifyingGlassIcon className="mb-3 h-8 w-8" />
+              {i18nService.t('sitesNoResults')}
+            </div>
+          ) : (
+            <div>
+              <div className="flex items-center border-b border-border px-3 pb-2">
+                <h2 className="min-w-0 flex-1 text-xs font-medium text-secondary">
+                  {i18nService.t('sitesMySites')}
+                </h2>
+                <span className="w-[140px] shrink-0 px-3 text-xs text-secondary">
+                  {i18nService.t('sitesAccessMode')}
+                </span>
+                <span className="w-[116px] shrink-0" aria-hidden="true" />
+              </div>
+              <div>
+                {listData.list.map(site => (
+                  <div
+                    key={site.shareId}
+                    className="group flex w-full items-center rounded-lg border-b border-border/70 text-left transition-colors last:border-b-0 hover:bg-surface-raised/40"
                   >
-                    <SiteDefaultIcon />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <h3 className="truncate text-sm font-semibold text-foreground">
-                          {site.title}
-                        </h3>
-                        <SiteStatusBadge status={site.siteStatus} />
+                    <button
+                      type="button"
+                      onClick={() => void openSiteDetail(site)}
+                      className="flex min-w-0 flex-1 items-center gap-4 rounded-lg px-3 py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/30"
+                    >
+                      <SiteDefaultIcon />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <h3 className="truncate text-sm font-semibold text-foreground">
+                            {site.title}
+                          </h3>
+                          <SiteStatusBadge status={site.siteStatus} />
+                        </div>
+                        <div className="mt-1.5 flex items-center gap-2 whitespace-nowrap text-[11px] text-secondary">
+                          <span>
+                            {site.siteKind === SiteKind.NodeService
+                              ? i18nService.t('sitesNodeService')
+                              : i18nService.t('sitesStaticSite')}
+                          </span>
+                          <span>·</span>
+                          <span>{formatDateTime(site.updatedAt)}</span>
+                        </div>
                       </div>
-                      <p className="mt-1 truncate text-xs text-secondary">↗ {site.url}</p>
-                      <div className="mt-1.5 flex items-center gap-2 text-[11px] text-secondary">
-                        <span>
-                          {site.siteKind === SiteKind.NodeService
-                            ? i18nService.t('sitesNodeService')
-                            : i18nService.t('sitesStaticSite')}
-                        </span>
-                        <span>·</span>
-                        <span>
+                      <div className="flex w-[140px] shrink-0 items-center gap-2 px-3 text-xs text-foreground">
+                        {site.accessMode === HtmlShareAccessMode.Code ? (
+                          <LockClosedIcon className="h-4 w-4 shrink-0 text-secondary" />
+                        ) : (
+                          <GlobeAltIcon className="h-4 w-4 shrink-0 text-secondary" />
+                        )}
+                        <span className="truncate">
                           {site.accessMode === HtmlShareAccessMode.Code
                             ? i18nService.t('sitesCodeAccess')
                             : i18nService.t('sitesPublicAccess')}
                         </span>
-                        <span>·</span>
-                        <span>{formatDateTime(site.updatedAt)}</span>
                       </div>
+                    </button>
+                    <div className="flex w-[116px] shrink-0 items-center justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void openShareDialog(site)}
+                        className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-border px-2.5 text-xs font-medium text-foreground transition-colors hover:bg-surface-raised"
+                        aria-label={i18nService.t('sitesShare')}
+                        title={i18nService.t('sitesShare')}
+                      >
+                        <ArrowUpTrayIcon className="h-4 w-4" />
+                        <span>{i18nService.t('sitesShare')}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={event => {
+                          if (siteActionMenu?.site.shareId === site.shareId) {
+                            setSiteActionMenu(null);
+                            return;
+                          }
+                          const rect = event.currentTarget.getBoundingClientRect();
+                          const menuHeight = 84;
+                          const gap = 6;
+                          setSiteActionMenu({
+                            site,
+                            top:
+                              rect.bottom + gap + menuHeight > window.innerHeight
+                                ? Math.max(8, rect.top - menuHeight - gap)
+                                : rect.bottom + gap,
+                            right: Math.max(8, window.innerWidth - rect.right),
+                          });
+                        }}
+                        className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-foreground/70 transition-colors hover:bg-surface-raised hover:text-foreground ${siteActionMenu?.site.shareId === site.shareId ? 'bg-surface-raised text-foreground' : ''}`}
+                        aria-label={i18nService.t('sitesActions')}
+                        aria-haspopup="menu"
+                        aria-expanded={siteActionMenu?.site.shareId === site.shareId}
+                      >
+                        <EllipsisHorizontalIcon className="h-4 w-4" />
+                      </button>
                     </div>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={event => {
-                      if (siteActionMenu?.site.shareId === site.shareId) {
-                        setSiteActionMenu(null);
-                        return;
-                      }
-                      const rect = event.currentTarget.getBoundingClientRect();
-                      const menuHeight = 84;
-                      const gap = 6;
-                      setSiteActionMenu({
-                        site,
-                        top:
-                          rect.bottom + gap + menuHeight > window.innerHeight
-                            ? Math.max(8, rect.top - menuHeight - gap)
-                            : rect.bottom + gap,
-                        right: Math.max(8, window.innerWidth - rect.right),
-                      });
-                    }}
-                    className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-secondary transition-all hover:bg-background hover:text-foreground group-hover:opacity-100 group-focus-within:opacity-100 ${siteActionMenu?.site.shareId === site.shareId ? 'bg-background opacity-100' : 'opacity-40'}`}
-                    aria-label={i18nService.t('sitesActions')}
-                    aria-haspopup="menu"
-                    aria-expanded={siteActionMenu?.site.shareId === site.shareId}
-                  >
-                    <EllipsisHorizontalIcon className="h-4 w-4" />
-                  </button>
-                </div>
-              ))}
+                  </div>
+                ))}
+              </div>
             </div>
-          </div>
-        )}
+          )}
+        </div>
       </main>
       {listData.total > PAGE_SIZE && (
-        <footer className="flex h-14 shrink-0 items-center justify-center gap-3 border-t border-border">
+        <footer className="flex h-14 min-w-[720px] shrink-0 items-center justify-center gap-3 border-t border-border">
           <button
             type="button"
             disabled={page <= 1 || listLoading}
@@ -1169,6 +1316,169 @@ const SitesView: React.FC<SitesViewProps> = ({
           </button>
         </footer>
       )}
+      <Modal
+        isOpen={Boolean(shareSite)}
+        onClose={() => {
+          if (!shareActionLoading) closeShareDialog();
+        }}
+        className="w-[440px] max-w-[calc(100vw-32px)] rounded-2xl border border-border bg-background p-5 shadow-2xl"
+      >
+        {shareSite && (
+          <>
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-base font-semibold text-foreground">
+                  {i18nService.t('sitesShareTitle')}
+                </h2>
+                <p className="mt-1 text-xs leading-5 text-secondary">
+                  {i18nService.t('sitesShareDescription')}
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={shareActionLoading}
+                onClick={closeShareDialog}
+                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-secondary transition-colors hover:bg-surface-raised hover:text-foreground disabled:opacity-40"
+                aria-label={i18nService.t('close')}
+              >
+                <XMarkIcon className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="mt-4 flex items-center gap-3 rounded-xl border border-border bg-surface p-3">
+              <SiteDefaultIcon />
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <h3 className="truncate text-sm font-semibold text-foreground">
+                    {shareSite.title}
+                  </h3>
+                  <SiteStatusBadge status={shareSite.siteStatus} />
+                </div>
+                <p className="mt-1 truncate text-xs text-secondary" title={shareSite.url}>
+                  {shareSite.url}
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-xs font-semibold text-foreground">
+                  {i18nService.t('sitesWhoCanAccess')}
+                </h3>
+                {shareDialogLoading && <ArrowPathIcon className="h-4 w-4 animate-spin text-secondary" />}
+              </div>
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                {[HtmlShareAccessMode.Public, HtmlShareAccessMode.Code].map(mode => (
+                  <button
+                    key={mode}
+                    type="button"
+                    disabled={!shareCanChangeAccess || shareDialogLoading || shareActionLoading}
+                    onClick={() => {
+                      setShareAccessModeDraft(mode);
+                      setShareLinkCopied(false);
+                      setShareError(null);
+                    }}
+                    className={`rounded-xl border p-3 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+                      shareAccessModeDraft === mode
+                        ? 'border-primary bg-primary/5'
+                        : 'border-border bg-surface hover:border-primary/50'
+                    }`}
+                  >
+                    <span className="flex items-center gap-2 text-sm font-medium text-foreground">
+                      {mode === HtmlShareAccessMode.Public ? (
+                        <GlobeAltIcon className="h-4 w-4" />
+                      ) : (
+                        <LockClosedIcon className="h-4 w-4" />
+                      )}
+                      {mode === HtmlShareAccessMode.Public
+                        ? i18nService.t('sitesPublicAccess')
+                        : i18nService.t('sitesCodeAccess')}
+                    </span>
+                    <span className="mt-1 block text-[11px] leading-4 text-secondary">
+                      {mode === HtmlShareAccessMode.Public
+                        ? i18nService.t('sitesPublicAccessDescription')
+                        : i18nService.t('sitesCodeAccessDescription')}
+                    </span>
+                  </button>
+                ))}
+              </div>
+              {shareHasAccessChange && (
+                <p className="mt-2 text-xs text-secondary">
+                  {i18nService.t('sitesShareAccessHint')}
+                </p>
+              )}
+            </div>
+
+            {shareAccessModeDraft === HtmlShareAccessMode.Code &&
+              shareSiteDetail?.shareCode && (
+                <div className="mt-3 flex items-center justify-between rounded-lg bg-surface px-3 py-2">
+                  <span className="text-xs text-secondary">
+                    {i18nService.t('sitesShareCode')}
+                    <span className="ml-2 font-mono text-sm text-foreground">
+                      {shareSiteDetail.shareCode}
+                    </span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void copyTextToClipboard(shareSiteDetail.shareCode || '')
+                    }
+                    className="rounded-lg p-1.5 text-secondary transition-colors hover:bg-surface-raised hover:text-foreground"
+                    aria-label={i18nService.t('copy')}
+                    title={i18nService.t('copy')}
+                  >
+                    <ClipboardDocumentIcon className="h-4 w-4" />
+                  </button>
+                </div>
+              )}
+            {shareAccessModeDraft === HtmlShareAccessMode.Code &&
+              shareSiteDetail &&
+              !shareSiteDetail.shareCode && (
+                <p className="mt-3 text-xs text-amber-700 dark:text-amber-300">
+                  {i18nService.t('sitesShareCodeCopyUnavailable')}
+                </p>
+              )}
+
+            {shareError && <p className="mt-3 text-xs text-red-600">{shareError}</p>}
+
+            <div className="mt-5 flex justify-end gap-2 border-t border-border pt-4">
+              <button
+                type="button"
+                disabled={shareActionLoading}
+                onClick={closeShareDialog}
+                className="h-9 rounded-lg border border-border px-3.5 text-sm text-foreground transition-colors hover:bg-surface-raised disabled:opacity-40"
+              >
+                {i18nService.t('cancel')}
+              </button>
+              <button
+                type="button"
+                disabled={shareDialogLoading || shareActionLoading || shareCopyUnavailable}
+                onClick={() =>
+                  void (shareHasAccessChange ? updateShareAccessMode() : copyShareLink())
+                }
+                className="inline-flex h-9 min-w-[104px] items-center justify-center gap-1.5 rounded-lg bg-primary px-3.5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {shareActionLoading && <ArrowPathIcon className="h-4 w-4 animate-spin" />}
+                {!shareActionLoading &&
+                  (shareHasAccessChange ? (
+                    <GlobeAltIcon className="h-4 w-4" />
+                  ) : (
+                    <ClipboardDocumentIcon className="h-4 w-4" />
+                  ))}
+                {shareActionLoading
+                  ? i18nService.t('saving')
+                  : shareLinkCopied
+                    ? i18nService.t('sitesLinkCopied')
+                    : shareHasAccessChange
+                      ? i18nService.t('sitesUpdateAccessMode')
+                      : shareCommittedAccessMode === HtmlShareAccessMode.Code
+                        ? i18nService.t('sitesCopyLinkAndCode')
+                        : i18nService.t('sitesCopyLink')}
+              </button>
+            </div>
+          </>
+        )}
+      </Modal>
       {detailLoading && (
         <div className="absolute inset-0 z-20 flex items-center justify-center bg-background/60 backdrop-blur-[1px]">
           <ArrowPathIcon className="h-5 w-5 animate-spin text-secondary" />
