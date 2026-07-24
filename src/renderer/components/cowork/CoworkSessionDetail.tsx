@@ -1099,12 +1099,32 @@ class ArtifactPanelErrorBoundary extends React.Component<
   }
 }
 
+const MODEL_RESPONSE_WAITING_HINT_DELAY_MS = 30_000;
+
 // Streaming activity bar shown between messages and input
 const StreamingActivityBar: React.FC<{ messages: CoworkMessage[]; isContextMaintenance?: boolean }> = ({
   messages,
   isContextMaintenance = false,
 }) => {
-  const statusText = getStreamingActivityStatusText(messages, isContextMaintenance);
+  const [showLongWaitHint, setShowLongWaitHint] = useState(false);
+
+  useEffect(() => {
+    setShowLongWaitHint(false);
+    if (isContextMaintenance) {
+      return undefined;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setShowLongWaitHint(true);
+    }, MODEL_RESPONSE_WAITING_HINT_DELAY_MS);
+    return () => window.clearTimeout(timeoutId);
+  }, [messages, isContextMaintenance]);
+
+  const statusText = getStreamingActivityStatusText(
+    messages,
+    isContextMaintenance,
+    showLongWaitHint,
+  );
 
   return (
     <div className={`shrink-0 animate-fade-in ${COWORK_DETAIL_GUTTER_CLASS}`}>
@@ -1112,7 +1132,7 @@ const StreamingActivityBar: React.FC<{ messages: CoworkMessage[]; isContextMaint
         <div className="streaming-bar" />
         {statusText && (
           <div className="py-1">
-            <span className="text-xs text-secondary">
+            <span className="text-xs text-secondary" aria-live="polite">
               {statusText}
             </span>
           </div>

@@ -92,6 +92,7 @@ const mapExecutionModeToSandboxMode = (
  * Also used by the runtime adapter's client-side timeout watchdog.
  */
 export const OPENCLAW_AGENT_TIMEOUT_SECONDS = 3600;
+export const OPENCLAW_LOBSTERAI_MODEL_TIMEOUT_SECONDS = 330;
 export const OPENCLAW_HEARTBEAT_EVERY_ENABLED = '1h';
 export const OPENCLAW_HEARTBEAT_EVERY_DISABLED = '0m';
 const DINGTALK_OPENCLAW_CHANNEL = 'dingtalk-connector';
@@ -554,6 +555,7 @@ type OpenClawProviderSelection = {
     apiKey?: string;
     auth: typeof AuthType[keyof typeof AuthType];
     headers?: Record<string, string>;
+    timeoutSeconds?: number;
     request?: {
       proxy: {
         mode: 'env-proxy';
@@ -1055,6 +1057,9 @@ export const buildProviderSelection = (options: {
       api,
       ...(apiKey ? { apiKey } : {}),
       auth,
+      ...(descriptor.providerId === OpenClawProviderId.LobsteraiServer
+        ? { timeoutSeconds: OPENCLAW_LOBSTERAI_MODEL_TIMEOUT_SECONDS }
+        : {}),
       ...(request ? { request } : {}),
       models: [
         {
