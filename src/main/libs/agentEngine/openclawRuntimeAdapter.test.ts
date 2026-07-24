@@ -308,7 +308,7 @@ test('resolveOpenClawRuntimeErrorMessage classifies generic error from safe time
     provider: 'minimax',
     model: 'MiniMax-M2.7',
     providerRuntimeFailureKind: 'timeout',
-  })).toContain('网络连接失败');
+  })).toContain('模型响应超时');
 });
 
 test('resolveOpenClawRuntimeErrorMessage classifies generic error from safe fetch failure preview', () => {
@@ -330,7 +330,7 @@ test('resolveOpenClawRuntimeErrorMessage prefers safe metadata over stale quota 
     provider: 'minimax',
     model: 'MiniMax-M2.7',
     providerRuntimeFailureKind: 'timeout',
-  })).toContain('网络连接失败');
+  })).toContain('模型响应超时');
   expect(consumeRecentOpenClawTokenProxyQuotaError()).toBeNull();
 });
 
@@ -4074,8 +4074,8 @@ test('chat final terminal error persists visible system message when no assistan
 
   const persistedError = session.messages.find((message) => message.type === 'system');
   expect(session.status).toBe('error');
-  expect(errorSpy).toHaveBeenCalledWith(session.id, expect.stringContaining('网络连接失败'));
-  expect(persistedError?.content).toContain('网络连接失败');
+  expect(errorSpy).toHaveBeenCalledWith(session.id, expect.stringContaining('模型响应超时'));
+  expect(persistedError?.content).toContain('模型响应超时');
 });
 
 test('chat error ignores non-managed OpenClaw session key when local session id is unknown', () => {
@@ -5354,10 +5354,10 @@ test('chat error clears context maintenance after compaction starts', () => {
   expect(maintenanceSpy).toHaveBeenNthCalledWith(2, session.id, false);
   expect(session.status).toBe('error');
   expect(adapter.activeTurns.has(session.id)).toBe(false);
-  expect(errorSpy).toHaveBeenCalledWith(session.id, expect.stringContaining('网络连接失败'));
+  expect(errorSpy).toHaveBeenCalledWith(session.id, expect.stringContaining('模型响应超时'));
   expect(session.messages.some((message) => (
     message.type === 'system'
-    && message.content.includes('网络连接失败')
+    && message.content.includes('模型响应超时')
   ))).toBe(true);
 });
 
@@ -5433,7 +5433,7 @@ test('chat error prevents stale empty final history sync from restarting context
 
   expect(session.status).toBe('error');
   expect(adapter.activeTurns.has(session.id)).toBe(false);
-  expect(errorSpy).toHaveBeenCalledWith(session.id, expect.stringContaining('网络连接失败'));
+  expect(errorSpy).toHaveBeenCalledWith(session.id, expect.stringContaining('模型响应超时'));
   expect(maintenanceSpy).not.toHaveBeenCalledWith(session.id, true);
 });
 
