@@ -3,6 +3,8 @@ import { PassThrough } from 'node:stream';
 import http from 'http';
 import { beforeEach, expect, test, vi } from 'vitest';
 
+import { AuthRefreshOutcome } from '../../shared/auth/constants';
+
 vi.mock('electron', () => ({
   net: { fetch: vi.fn() },
 }));
@@ -16,6 +18,20 @@ const testUtils = __openClawTokenProxyTestUtils;
 
 beforeEach(() => {
   consumeRecentOpenClawTokenProxyQuotaError();
+});
+
+test('refreshes LobsterAI credentials for 401 but not 403', () => {
+  expect(testUtils.shouldRefreshLobsterAIToken(401)).toBe(true);
+  expect(testUtils.shouldRefreshLobsterAIToken(403)).toBe(false);
+});
+
+test('turns only transient refresh failures into temporary service errors', () => {
+  expect(testUtils.isTemporaryAuthRefreshFailure({
+    outcome: AuthRefreshOutcome.TransientFailure,
+  })).toBe(true);
+  expect(testUtils.isTemporaryAuthRefreshFailure({
+    outcome: AuthRefreshOutcome.TerminalFailure,
+  })).toBe(false);
 });
 
 type MockProxyResponse = {

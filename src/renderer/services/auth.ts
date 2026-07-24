@@ -1,8 +1,16 @@
+import {
+  type AuthLifecycleEvent,
+  AuthLifecycleEventType,
+  type AuthSessionChangedEvent,
+  AuthSessionStatus,
+} from '@shared/auth/constants';
 import { ProviderName } from '@shared/providers';
 
 import { store } from '../store';
 import {
+  setAuthExpired,
   setAuthLoading,
+  setAuthTemporarilyUnavailable,
   setLoggedIn,
   setLoggedOut,
   setProfileSummary,
@@ -15,6 +23,8 @@ import {
   clearServerModels,
   setServerModels,
 } from '../store/slices/modelSlice';
+import { i18nService } from './i18n';
+import { LogReporterAction, reportYdAnalyzer } from './logReporter';
 
 interface AuthStateRefreshResult {
   isLoggedIn: boolean;
@@ -76,6 +86,20 @@ const writeAuthRendererLog = (
   }
 };
 
+const reportAuthLifecycleEvent = (event: AuthLifecycleEvent): void => {
+  void reportYdAnalyzer({
+    action: LogReporterAction.AuthLifecycle,
+    event_type: event.eventType,
+    outcome: event.outcome,
+    reason: 'reason' in event ? event.reason : undefined,
+    duration_ms: 'durationMs' in event ? event.durationMs : undefined,
+    failure_kind: 'failureKind' in event ? event.failureKind : undefined,
+    http_status: 'httpStatus' in event ? event.httpStatus : undefined,
+    error_code: 'errorCode' in event ? event.errorCode : undefined,
+    joined_requests: 'joinedRequests' in event ? event.joinedRequests : undefined,
+  });
+};
+
 export function mapPricingCatalogTextModelsToServerModels(
   textModels: PricingCatalogTextModel[],
 ): Model[] {
@@ -116,7 +140,9 @@ export function mapPricingCatalogToPublicServerModels(
 
 class AuthService {
   private unsubCallback: (() => void) | null = null;
+  private unsubLifecycleEvent: (() => void) | null = null;
   private unsubQuotaChanged: (() => void) | null = null;
+  private unsubSessionChanged: (() => void) | null = null;
   private unsubWindowState: (() => void) | null = null;
   private lastRefreshTime = 0;
   private loginAttemptSequence = 0;
@@ -134,6 +160,10 @@ class AuthService {
     this.unsubCallback = window.electron.auth.onCallback(async ({ code }) => {
       await this.handleCallback(code);
     });
+    this.unsubSessionChanged = window.electron.auth.onSessionChanged(event => {
+      void this.handleSessionChanged(event);
+    });
+    this.unsubLifecycleEvent = window.electron.auth.onLifecycleEvent(reportAuthLifecycleEvent);
 
     try {
       const pendingCode = await window.electron.auth.getPendingCallback();
@@ -142,12 +172,17 @@ class AuthService {
         handledPendingCode = await this.handleCallback(pendingCode);
       }
       if (!handledPendingCode) {
-        await this.refreshAuthState({ clearOnFailure: true });
+        await this.refreshAuthState({
+          clearOnFailure: true,
+          reportLifecycle: true,
+        });
       }
     } catch {
-      store.dispatch(setLoggedOut());
-      store.dispatch(clearServerModels());
-      await this.loadPublicPricingCatalogModels();
+      store.dispatch(setAuthTemporarilyUnavailable({ hasCredentials: false }));
+      reportAuthLifecycleEvent({
+        eventType: AuthLifecycleEventType.Restore,
+        outcome: AuthSessionStatus.TemporarilyUnavailable,
+      });
     }
 
     // Listen for quota changes (e.g. after cowork session using server model)
@@ -246,7 +281,10 @@ class AuthService {
    * Refresh the full auth snapshot from persisted tokens.
    */
   async refreshAuthState(
-    options: { clearOnFailure?: boolean } = {},
+    options: {
+      clearOnFailure?: boolean;
+      reportLifecycle?: boolean;
+    } = {},
   ): Promise<AuthStateRefreshResult> {
     try {
       const result = await window.electron.auth.getUser();
@@ -254,16 +292,47 @@ class AuthService {
         store.dispatch(setLoggedIn({ user: result.user, quota: result.quota }));
         await this.loadServerModels();
         void this.fetchProfileSummary();
+        if (options.reportLifecycle) {
+          reportAuthLifecycleEvent({
+            eventType: AuthLifecycleEventType.Restore,
+            outcome: AuthSessionStatus.Authenticated,
+          });
+        }
         return { isLoggedIn: true, user: result.user, quota: result.quota ?? null };
       }
-    } catch {
-      // handled below
-    }
 
-    if (options.clearOnFailure) {
-      store.dispatch(setLoggedOut());
-      store.dispatch(clearServerModels());
-      await this.loadPublicPricingCatalogModels();
+      const status = result.status ?? (
+        result.hasCredentials
+          ? AuthSessionStatus.TemporarilyUnavailable
+          : AuthSessionStatus.Unauthenticated
+      );
+      if (options.reportLifecycle) {
+        reportAuthLifecycleEvent({
+          eventType: AuthLifecycleEventType.Restore,
+          outcome: status,
+        });
+      }
+
+      if (status === AuthSessionStatus.TemporarilyUnavailable) {
+        store.dispatch(setAuthTemporarilyUnavailable({
+          hasCredentials: result.hasCredentials === true,
+          cachedUser: result.cachedUser ?? null,
+        }));
+      } else if (status === AuthSessionStatus.Expired) {
+        await this.applyLoggedOutState(true);
+      } else if (options.clearOnFailure) {
+        await this.applyLoggedOutState(false);
+      }
+    } catch {
+      store.dispatch(setAuthTemporarilyUnavailable({
+        hasCredentials: store.getState().auth.isLoggedIn,
+      }));
+      if (options.reportLifecycle) {
+        reportAuthLifecycleEvent({
+          eventType: AuthLifecycleEventType.Restore,
+          outcome: AuthSessionStatus.TemporarilyUnavailable,
+        });
+      }
     }
 
     const current = store.getState().auth;
@@ -279,9 +348,7 @@ class AuthService {
    */
   async logout() {
     await window.electron.auth.logout();
-    store.dispatch(setLoggedOut());
-    store.dispatch(clearServerModels());
-    await this.loadPublicPricingCatalogModels();
+    await this.applyLoggedOutState(false);
   }
 
   /**
@@ -335,10 +402,42 @@ class AuthService {
   destroy() {
     this.unsubCallback?.();
     this.unsubCallback = null;
+    this.unsubLifecycleEvent?.();
+    this.unsubLifecycleEvent = null;
     this.unsubQuotaChanged?.();
     this.unsubQuotaChanged = null;
+    this.unsubSessionChanged?.();
+    this.unsubSessionChanged = null;
     this.unsubWindowState?.();
     this.unsubWindowState = null;
+  }
+
+  private async handleSessionChanged(event: AuthSessionChangedEvent): Promise<void> {
+    if (event.status !== AuthSessionStatus.Expired) return;
+    writeAuthRendererLog('warn', `login session expired (${event.reason})`);
+    const cleanup = this.applyLoggedOutState(true);
+    window.dispatchEvent(new CustomEvent('app:showToast', {
+      detail: i18nService.t('coworkErrorLobsterAILoginExpired'),
+    }));
+    await cleanup;
+  }
+
+  private async applyLoggedOutState(expired: boolean): Promise<void> {
+    const targetStatus = expired
+      ? AuthSessionStatus.Expired
+      : AuthSessionStatus.Unauthenticated;
+    const current = store.getState().auth;
+    if (
+      !current.isLoggedIn
+      && !current.isLoading
+      && current.sessionStatus === targetStatus
+    ) {
+      return;
+    }
+
+    store.dispatch(expired ? setAuthExpired() : setLoggedOut());
+    store.dispatch(clearServerModels());
+    await this.loadPublicPricingCatalogModels();
   }
 
   /**

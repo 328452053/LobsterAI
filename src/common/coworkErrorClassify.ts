@@ -8,6 +8,7 @@ import { OpenClawTranscriptSafetyErrorCode } from '../shared/openclawTranscript/
 
 export const CoworkErrorI18nKey = {
   AuthInvalid: 'coworkErrorAuthInvalid',
+  LobsterAILoginExpired: 'coworkErrorLobsterAILoginExpired',
   OAuthInvalid: 'coworkErrorOAuthInvalid',
   ModelAccessDenied: 'coworkErrorModelAccessDenied',
   QuotaExhausted: 'coworkErrorQuotaExhausted',
