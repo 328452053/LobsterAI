@@ -631,6 +631,26 @@ test('resolveOpenClawRuntimeErrorMessage classifies generic error from safe OAut
   })).toContain('OAuth 授权已失效');
 });
 
+test('resolveOpenClawRuntimeErrorMessage identifies expired LobsterAI plan login', () => {
+  expect(resolveOpenClawRuntimeErrorMessage('LLM request failed.', {
+    provider: 'lobsterai-server',
+    model: 'MiniMax-M3',
+    failoverReason: 'auth',
+    httpCode: '401',
+    rawErrorPreview: '401 status code (no body)',
+  })).toContain('登录状态已过期');
+});
+
+test('resolveOpenClawRuntimeErrorMessage keeps LobsterAI HTTP 403 as model access denial', () => {
+  expect(resolveOpenClawRuntimeErrorMessage('LLM request failed.', {
+    provider: 'lobsterai-server',
+    model: 'MiniMax-M3',
+    failoverReason: 'auth',
+    httpCode: '403',
+    rawErrorPreview: '403 Forbidden',
+  })).toContain('无权访问该模型');
+});
+
 test('resolveOpenClawRuntimeErrorMessage classifies generic error from safe model access metadata', () => {
   expect(resolveOpenClawRuntimeErrorMessage('LLM request failed.', {
     provider: 'minimax',
@@ -644,7 +664,7 @@ test('resolveOpenClawRuntimeErrorMessage classifies generic error from safe time
     provider: 'minimax',
     model: 'MiniMax-M2.7',
     providerRuntimeFailureKind: 'timeout',
-  })).toContain('网络连接失败');
+  })).toContain('模型响应超时');
 });
 
 test('resolveOpenClawRuntimeErrorMessage classifies generic error from safe fetch failure preview', () => {
@@ -666,7 +686,7 @@ test('resolveOpenClawRuntimeErrorMessage prefers safe metadata over stale quota 
     provider: 'minimax',
     model: 'MiniMax-M2.7',
     providerRuntimeFailureKind: 'timeout',
-  })).toContain('网络连接失败');
+  })).toContain('模型响应超时');
   expect(consumeRecentOpenClawTokenProxyQuotaError()).toBeNull();
 });
 
@@ -4410,8 +4430,8 @@ test('chat final terminal error persists visible system message when no assistan
 
   const persistedError = session.messages.find((message) => message.type === 'system');
   expect(session.status).toBe('error');
-  expect(errorSpy).toHaveBeenCalledWith(session.id, expect.stringContaining('网络连接失败'));
-  expect(persistedError?.content).toContain('网络连接失败');
+  expect(errorSpy).toHaveBeenCalledWith(session.id, expect.stringContaining('模型响应超时'));
+  expect(persistedError?.content).toContain('模型响应超时');
 });
 
 test('chat error ignores non-managed OpenClaw session key when local session id is unknown', () => {
@@ -5690,10 +5710,10 @@ test('chat error clears context maintenance after compaction starts', () => {
   expect(maintenanceSpy).toHaveBeenNthCalledWith(2, session.id, false);
   expect(session.status).toBe('error');
   expect(adapter.activeTurns.has(session.id)).toBe(false);
-  expect(errorSpy).toHaveBeenCalledWith(session.id, expect.stringContaining('网络连接失败'));
+  expect(errorSpy).toHaveBeenCalledWith(session.id, expect.stringContaining('模型响应超时'));
   expect(session.messages.some((message) => (
     message.type === 'system'
-    && message.content.includes('网络连接失败')
+    && message.content.includes('模型响应超时')
   ))).toBe(true);
 });
 
@@ -5769,7 +5789,7 @@ test('chat error prevents stale empty final history sync from restarting context
 
   expect(session.status).toBe('error');
   expect(adapter.activeTurns.has(session.id)).toBe(false);
-  expect(errorSpy).toHaveBeenCalledWith(session.id, expect.stringContaining('网络连接失败'));
+  expect(errorSpy).toHaveBeenCalledWith(session.id, expect.stringContaining('模型响应超时'));
   expect(maintenanceSpy).not.toHaveBeenCalledWith(session.id, true);
 });
 

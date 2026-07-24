@@ -3,6 +3,8 @@ import { PassThrough } from 'node:stream';
 import http from 'http';
 import { beforeEach, expect, test, vi } from 'vitest';
 
+import { AuthRefreshOutcome } from '../../shared/auth/constants';
+
 vi.mock('electron', () => ({
   net: { fetch: vi.fn() },
 }));
@@ -18,23 +20,60 @@ beforeEach(() => {
   consumeRecentOpenClawTokenProxyQuotaError();
 });
 
+test('refreshes LobsterAI credentials for 401 but not 403', () => {
+  expect(testUtils.shouldRefreshLobsterAIToken(401)).toBe(true);
+  expect(testUtils.shouldRefreshLobsterAIToken(403)).toBe(false);
+});
+
+test('turns only transient refresh failures into temporary service errors', () => {
+  expect(testUtils.isTemporaryAuthRefreshFailure({
+    outcome: AuthRefreshOutcome.TransientFailure,
+  })).toBe(true);
+  expect(testUtils.isTemporaryAuthRefreshFailure({
+    outcome: AuthRefreshOutcome.TerminalFailure,
+  })).toBe(false);
+});
+
 type MockProxyResponse = {
   write: ReturnType<typeof vi.fn>;
   end: ReturnType<typeof vi.fn>;
   destroy: ReturnType<typeof vi.fn>;
   on: ReturnType<typeof vi.fn>;
+  emitClose: () => void;
   destroyed: boolean;
+  writableEnded: boolean;
+  writableFinished: boolean;
 };
 
 function createMockProxyResponse(): MockProxyResponse {
+  const listeners = new Map<string, Array<(...args: unknown[]) => void>>();
   const res: MockProxyResponse = {
     write: vi.fn(),
-    end: vi.fn(),
+    end: vi.fn(() => {
+      res.writableEnded = true;
+      res.writableFinished = true;
+    }),
     destroy: vi.fn(() => {
       res.destroyed = true;
+      for (const listener of listeners.get('close') ?? []) {
+        listener();
+      }
     }),
-    on: vi.fn(),
+    on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+      const eventListeners = listeners.get(event) ?? [];
+      eventListeners.push(listener);
+      listeners.set(event, eventListeners);
+      return res;
+    }),
+    emitClose: () => {
+      res.destroyed = true;
+      for (const listener of listeners.get('close') ?? []) {
+        listener();
+      }
+    },
     destroyed: false,
+    writableEnded: false,
+    writableFinished: false,
   };
   return res;
 }
@@ -295,6 +334,29 @@ test('classifies SSE packets as terminal only on [DONE], finish_reason, or error
   }
 });
 
+test('classifies the specific SSE terminal packet kind', () => {
+  const cases = [
+    ['data: [DONE]', testUtils.ProxySSETerminalKind.Done],
+    [
+      'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+      testUtils.ProxySSETerminalKind.FinishReason,
+    ],
+    [
+      'event: message_stop\ndata: {"type":"message_stop"}',
+      testUtils.ProxySSETerminalKind.MessageStop,
+    ],
+    [
+      'event: error\ndata: {"type":"error","error":{"message":"boom"}}',
+      testUtils.ProxySSETerminalKind.Error,
+    ],
+  ] as const;
+
+  for (const [packet, expectedKind] of cases) {
+    expect(testUtils.classifyTerminalProxySSEPacket(testUtils.parseProxySSEPacket(packet)))
+      .toBe(expectedKind);
+  }
+});
+
 test('scan state observes a terminal packet split across chunk boundaries', () => {
   const scanState = testUtils.createProxySSEStreamScanState();
 
@@ -308,12 +370,15 @@ test('scan state observes a terminal packet split across chunk boundaries', () =
   buffer = testUtils.scanProxySSEBufferForQuotaError(`${buffer}NE]\n\n`, 1_001, scanState);
   expect(buffer).toBe('');
   expect(scanState.sawTerminalPacket).toBe(true);
+  expect(scanState.terminalKind).toBe(testUtils.ProxySSETerminalKind.Done);
+  expect(scanState.eventCount).toBe(2);
 });
 
 test('flush detects a terminal packet in a trailing partial SSE frame', () => {
   const scanState = testUtils.createProxySSEStreamScanState();
   testUtils.flushProxySSEBufferForQuotaError('data: [DONE]', 1_000, scanState);
   expect(scanState.sawTerminalPacket).toBe(true);
+  expect(scanState.terminalKind).toBe(testUtils.ProxySSETerminalKind.Done);
 });
 
 test('node stream: complete SSE response ends the proxied response cleanly', async () => {
@@ -373,6 +438,31 @@ test('node stream: upstream SSE error payload still passes through and ends clea
     message: '本月积分已用完',
     code: 40202,
   });
+});
+
+test('node stream: classifies completion that arrives after the downstream closes', async () => {
+  const upstream = new PassThrough();
+  const res = createMockProxyResponse();
+  const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+  try {
+    testUtils.pipeStreamingResponseWithQuotaScan(upstream, asServerResponse(res));
+    upstream.write('data: {"choices":[{"delta":{"content":"working"},"finish_reason":null}]}\n\n');
+    res.emitClose();
+    upstream.write('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n');
+    upstream.write('data: [DONE]\n\n');
+    upstream.end();
+    await flushStreamEvents();
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('outcome=late_completion_after_downstream_close'),
+    );
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('terminal=done'));
+    expect(res.end).not.toHaveBeenCalled();
+    expect(res.destroy).not.toHaveBeenCalled();
+  } finally {
+    warnSpy.mockRestore();
+  }
 });
 
 test('web stream: truncated SSE response is aborted on clean close', async () => {

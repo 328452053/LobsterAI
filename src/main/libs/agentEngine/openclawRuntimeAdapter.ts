@@ -57,6 +57,7 @@ import type {
 } from '../../../shared/kit/constants';
 import { OpenClawGatewayFailureKind } from '../../../shared/openclawEngine/constants';
 import { OpenClawTranscriptSafetyStatus } from '../../../shared/openclawTranscript/constants';
+import { ProviderName } from '../../../shared/providers';
 import type { Agent, CoworkExecutionMode, CoworkMessage, CoworkMessageMetadata, CoworkSession, CoworkSessionStatus, CoworkStore } from '../../coworkStore';
 import { t } from '../../i18n';
 import { MediaGenerationTool } from '../../mediaGenerationPolicy';
@@ -1458,7 +1459,7 @@ const COWORK_ERROR_KEY_BY_OPENCLAW_FAILOVER_REASON: Record<string, string> = {
   billing: CoworkErrorI18nKey.InsufficientBalance,
   rate_limit: CoworkErrorI18nKey.RateLimit,
   overloaded: CoworkErrorI18nKey.RateLimit,
-  timeout: CoworkErrorI18nKey.NetworkError,
+  timeout: CoworkErrorI18nKey.ModelResponseTimeout,
   server_error: CoworkErrorI18nKey.ServerError,
 };
 
@@ -1473,7 +1474,7 @@ const COWORK_ERROR_KEY_BY_OPENCLAW_RUNTIME_FAILURE_KIND: Record<string, string> 
   auth_invalid_token: CoworkErrorI18nKey.OAuthInvalid,
   rate_limit: CoworkErrorI18nKey.RateLimit,
   dns: CoworkErrorI18nKey.NetworkError,
-  timeout: CoworkErrorI18nKey.NetworkError,
+  timeout: CoworkErrorI18nKey.ModelResponseTimeout,
   upstream_html: CoworkErrorI18nKey.ServerError,
   proxy: CoworkErrorI18nKey.NetworkError,
   empty_response: CoworkErrorI18nKey.ServerError,
@@ -1516,6 +1517,13 @@ function classifyOpenClawSafeRuntimeErrorMetadata(
 ): string | null {
   if (!metadata) return null;
 
+  if (
+    metadata.provider?.trim() === ProviderName.LobsteraiServer
+    && metadata.httpCode?.trim() === '403'
+  ) {
+    return CoworkErrorI18nKey.ModelAccessDenied;
+  }
+
   const failureKind = metadata.providerRuntimeFailureKind?.trim();
   if (failureKind && COWORK_ERROR_KEY_BY_OPENCLAW_RUNTIME_FAILURE_KIND[failureKind]) {
     return COWORK_ERROR_KEY_BY_OPENCLAW_RUNTIME_FAILURE_KIND[failureKind];
@@ -1540,6 +1548,18 @@ function classifyOpenClawSafeRuntimeErrorMetadata(
   return null;
 }
 
+function isLobsterAILoginExpiredMetadata(
+  metadata: OpenClawSafeRuntimeErrorMetadata | undefined,
+): boolean {
+  if (metadata?.provider?.trim() !== ProviderName.LobsteraiServer) return false;
+  if (metadata.httpCode?.trim() === '403') return false;
+  if (metadata.providerRuntimeFailureKind?.trim() === 'auth_scope') return false;
+  return metadata.httpCode?.trim() === '401'
+    || metadata.failoverReason?.trim() === 'auth'
+    || metadata.providerRuntimeFailureKind?.trim() === 'auth_refresh'
+    || metadata.providerRuntimeFailureKind?.trim() === 'auth_invalid_token';
+}
+
 export function resolveOpenClawRuntimeErrorMessage(
   errorMessage: string,
   metadata?: OpenClawSafeRuntimeErrorMetadata,
@@ -1548,6 +1568,15 @@ export function resolveOpenClawRuntimeErrorMessage(
   const classifiedKey = classifyErrorKey(normalized);
 
   if (classifiedKey) {
+    if (
+      isLobsterAILoginExpiredMetadata(metadata)
+      && (
+        classifiedKey === CoworkErrorI18nKey.AuthInvalid
+        || classifiedKey === CoworkErrorI18nKey.OAuthInvalid
+      )
+    ) {
+      return t(CoworkErrorI18nKey.LobsterAILoginExpired);
+    }
     if (classifiedKey === CoworkErrorI18nKey.QuotaExhausted) {
       consumeRecentOpenClawTokenProxyQuotaError();
     }
@@ -1555,6 +1584,10 @@ export function resolveOpenClawRuntimeErrorMessage(
   }
 
   if (isOpenClawGenericLlmRequestFailed(normalized)) {
+    if (isLobsterAILoginExpiredMetadata(metadata)) {
+      consumeRecentOpenClawTokenProxyQuotaError();
+      return t(CoworkErrorI18nKey.LobsterAILoginExpired);
+    }
     const metadataClassifiedKey = classifyOpenClawSafeRuntimeErrorMetadata(metadata);
     if (metadataClassifiedKey) {
       consumeRecentOpenClawTokenProxyQuotaError();

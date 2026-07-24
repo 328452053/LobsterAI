@@ -5,6 +5,12 @@ import type {
   AsrRealtimeSessionResult,
 } from '../../shared/asr/constants';
 import type {
+  AuthLifecycleEvent,
+  AuthRefreshOutcome,
+  AuthSessionChangedEvent,
+  AuthSessionStatus,
+} from '../../shared/auth/constants';
+import type {
   BrowserDiagnosticResult,
   BrowserRuntimeProfile,
 } from '../../shared/browserWebAccess/constants';
@@ -67,6 +73,7 @@ import type {
 } from '../../shared/shell/constants';
 import type {
   SkinApplyResponse,
+  SkinBindThemeResponse,
   SkinDeactivateResponse,
   SkinDeleteResponse,
   SkinGetActiveResponse,
@@ -657,7 +664,8 @@ interface IElectronAPI {
   skin: {
     getActive: () => Promise<SkinGetActiveResponse>;
     list: () => Promise<SkinListResponse>;
-    apply: (skinId: string) => Promise<SkinApplyResponse>;
+    apply: (skinId: string, boundThemeId?: string) => Promise<SkinApplyResponse>;
+    bindTheme: (skinId: string, themeId: string) => Promise<SkinBindThemeResponse>;
     deactivate: () => Promise<SkinDeactivateResponse>;
     delete: (skinId: string) => Promise<SkinDeleteResponse>;
     onChanged: (callback: () => void) => () => void;
@@ -1688,10 +1696,21 @@ interface IElectronAPI {
     exchange: (
       code: string,
     ) => Promise<{ success: boolean; user?: any; quota?: any; error?: string }>;
-    getUser: () => Promise<{ success: boolean; user?: any; quota?: any }>;
+    getUser: () => Promise<{
+      success: boolean;
+      status?: AuthSessionStatus;
+      hasCredentials?: boolean;
+      cachedUser?: any;
+      user?: any;
+      quota?: any;
+    }>;
     getQuota: () => Promise<{ success: boolean; quota?: any }>;
     logout: () => Promise<{ success: boolean }>;
-    refreshToken: () => Promise<{ success: boolean; accessToken?: string }>;
+    refreshToken: () => Promise<{
+      success: boolean;
+      accessToken?: string;
+      outcome?: AuthRefreshOutcome;
+    }>;
     getAccessToken: () => Promise<string | null>;
     getModels: () => Promise<{
       success: boolean;
@@ -1737,6 +1756,8 @@ interface IElectronAPI {
     getPendingCallback: () => Promise<string | null>;
     onCallback: (callback: (data: { code: string }) => void) => () => void;
     onQuotaChanged: (callback: () => void) => () => void;
+    onSessionChanged: (callback: (event: AuthSessionChangedEvent) => void) => () => void;
+    onLifecycleEvent: (callback: (event: AuthLifecycleEvent) => void) => () => void;
   };
   media: {
     getModels: (type: 'image' | 'video') => Promise<{ success: boolean; models?: Array<{ modelId: string; displayName: string; provider: string; mediaType: string; generationTimeout: number; pricing: Record<string, unknown> }>; error?: string }>;
@@ -1769,6 +1790,9 @@ interface IElectronAPI {
     }>;
     getUser: () => Promise<{
       success: boolean;
+      status?: AuthSessionStatus;
+      hasCredentials?: boolean;
+      cachedUser?: import('../store/slices/authSlice').UserProfile | null;
       user?: import('../store/slices/authSlice').UserProfile;
       quota?: {
         planName: string;
@@ -1789,10 +1813,17 @@ interface IElectronAPI {
       };
     }>;
     logout: () => Promise<{ success: boolean }>;
-    refreshToken: () => Promise<{ success: boolean; accessToken?: string }>;
+    refreshToken: () => Promise<{
+      success: boolean;
+      accessToken?: string;
+      outcome?: AuthRefreshOutcome;
+    }>;
     getAccessToken: () => Promise<string | null>;
     getPendingCallback: () => Promise<string | null>;
     onCallback: (callback: (data: { code: string }) => void) => () => void;
+    onQuotaChanged: (callback: () => void) => () => void;
+    onSessionChanged: (callback: (event: AuthSessionChangedEvent) => void) => () => void;
+    onLifecycleEvent: (callback: (event: AuthLifecycleEvent) => void) => () => void;
   };
   qwen: Record<string, never>;
   feishu: {

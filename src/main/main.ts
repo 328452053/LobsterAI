@@ -37,7 +37,16 @@ import { AppIpcChannel } from '../shared/app/constants';
 import { AppSettingsAutoLaunchErrorCode, AppSettingsIpc } from '../shared/appSettings/constants';
 import { AppUpdateIpc } from '../shared/appUpdate/constants';
 import { ArtifactBrowserPartition, ArtifactPreviewIpc, ArtifactPreviewProtocol } from '../shared/artifactPreview/constants';
-import { AuthIpcChannel } from '../shared/auth/constants';
+import {
+  AuthIpcChannel,
+  type AuthLifecycleEvent,
+  AuthLifecycleEventType,
+  AuthRefreshOutcome,
+  AuthRefreshReason,
+  type AuthSessionChangedEvent,
+  AuthSessionChangeReason,
+  AuthSessionStatus,
+} from '../shared/auth/constants';
 import {
   type BrowserDiagnosticResultStep,
   BrowserDiagnosticStatus,
@@ -196,6 +205,10 @@ import {
   appendLoginParams,
   startAuthLocalCallback,
 } from './libs/authLocalCallbackServer';
+import {
+  AuthSessionManager,
+  resolveAuthSessionStatusFromError,
+} from './libs/authSessionManager';
 import type { BrowserAnnotationAssetIdentity, SaveBrowserAnnotationAssetInput } from './libs/browserAnnotationAssetStore';
 import { BrowserAnnotationAssetStore } from './libs/browserAnnotationAssetStore';
 import {
@@ -1986,9 +1999,9 @@ const bootstrapOpenClawEngine = async (
   return promise;
 };
 
-// Module-level handle so ensureOpenClawRunningForCowork can await any in-flight
-// proactive token refresh before syncing config to the gateway.
-let pendingTokenRefresh: Promise<string | null> | null = null;
+// Injected after the auth session manager is created. This keeps gateway startup
+// able to await an in-flight refresh without exposing refresh internals globally.
+let waitForPendingTokenRefresh: () => Promise<void> = async () => {};
 
 const ensureOpenClawRunningForCowork = async () => {
   const configApplyStatus = await waitForOpenClawConfigApply('cowork engine startup');
@@ -2001,10 +2014,7 @@ const ensureOpenClawRunningForCowork = async () => {
   if (status.phase === 'running') {
     // Token proxy handles dynamic token injection — no need to restart
     // the gateway for token changes. Just wait for any in-flight refresh.
-    if (pendingTokenRefresh) {
-      console.log('[OpenClaw] ensureRunning: awaiting pending token refresh before proceeding');
-      await pendingTokenRefresh.catch(() => {});
-    }
+    await waitForPendingTokenRefresh();
     return manager.getStatus();
   }
   if (status.phase === 'starting') {
@@ -2013,10 +2023,7 @@ const ensureOpenClawRunningForCowork = async () => {
 
   // Wait for any in-flight token refresh so that the gateway starts with
   // a fresh token rather than the stale one that triggered the refresh.
-  if (pendingTokenRefresh) {
-    console.log('[OpenClaw] ensureRunning: awaiting pending token refresh before gateway start');
-    await pendingTokenRefresh.catch(() => {});
-  }
+  await waitForPendingTokenRefresh();
 
   // Ensure AskUser server is started and config is synced before launching the gateway,
   // so that mcp.servers config is available in openclaw.json when the gateway loads.
@@ -2858,7 +2865,7 @@ const bindCoworkRuntimeForwarder = (): void => {
         const windows = BrowserWindow.getAllWindows();
         windows.forEach(win => {
           if (win.isDestroyed()) return;
-          win.webContents.send('auth:quotaChanged');
+          win.webContents.send(AuthIpcChannel.QuotaChanged);
         });
       }
     } catch {
@@ -4241,6 +4248,15 @@ if (!gotTheLock) {
     getStore().delete('auth_tokens');
   };
 
+  const getAuthUser = (): Record<string, unknown> | null => {
+    try {
+      return getStore().get<Record<string, unknown>>(AUTH_USER_STORE_KEY) || null;
+    } catch (error) {
+      console.warn('[Auth] failed to read cached auth user:', error);
+      return null;
+    }
+  };
+
   const saveAuthUser = (user: Record<string, unknown>) => {
     try {
       getStore().set(AUTH_USER_STORE_KEY, user);
@@ -4251,7 +4267,7 @@ if (!gotTheLock) {
 
   const getAuthUserId = (): string | null => {
     try {
-      const user = getStore().get<Record<string, unknown>>(AUTH_USER_STORE_KEY);
+      const user = getAuthUser();
       const yid = user?.yid;
       if (typeof yid === 'string' && yid.trim()) return yid;
       const userId = user?.userId;
@@ -4320,77 +4336,56 @@ if (!gotTheLock) {
     return parsed.toString();
   };
 
-  // refreshOnce() is the single entry-point for all token refresh paths
-  // (proactive, proxy 401/403 retry, and main-process authenticated API 401s).
-  // It deduplicates concurrent calls via pendingTokenRefresh so that rolling
-  // refresh tokens are never consumed twice.
-  const refreshOnce = async (reason: string): Promise<string | null> => {
-    if (pendingTokenRefresh) {
-      return pendingTokenRefresh;
+  const emitAuthLifecycleEvent = (event: AuthLifecycleEvent): void => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send(AuthIpcChannel.LifecycleEvent, event);
     }
-    let resolvedToken: string | null = null;
-    pendingTokenRefresh = (async () => {
-      try {
-        const tokens = getAuthTokens();
-        if (!tokens?.refreshToken) return null;
-        const serverBaseUrl = getServerApiBaseUrl();
-        const refreshUrl = `${serverBaseUrl}/api/auth/refresh`;
-        console.log(`[Auth] requesting token refresh (reason: ${reason}) at ${refreshUrl}`);
-        const resp = await net.fetch(refreshUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(withKeyfromBody({ refreshToken: tokens.refreshToken })),
-        });
-        if (resp.ok) {
-          const body = await resp.json() as { code: number; data: { accessToken: string; refreshToken?: string } };
-          if (body.code === 0 && body.data) {
-            saveAuthTokens(body.data.accessToken, body.data.refreshToken || tokens.refreshToken);
-            console.log(`[Auth] token refresh succeeded (reason: ${reason})`);
-            resolvedToken = body.data.accessToken;
-            // Token proxy handles fresh tokens dynamically — no need
-            // to restart the gateway on token refresh.
-            syncOpenClawConfig({ reason: `token-refresh:${reason}`, restartGatewayIfRunning: false }).catch((err) => {
-              console.warn('[Auth] post-refresh OpenClaw config sync failed:', err);
-            });
-          }
-        }
-      } catch (err) {
-        console.warn(`[Auth] token refresh failed (reason: ${reason}):`, err);
-      } finally {
-        pendingTokenRefresh = null;
-      }
-      return resolvedToken;
-    })();
-    return pendingTokenRefresh;
   };
 
-  /**
-   * Helper: Fetch with Bearer token, auto-refresh on 401 and retry once.
-   */
-  const fetchWithAuth = async (url: string, options?: RequestInit): Promise<Response> => {
-    const tokens = getAuthTokens();
-    if (!tokens) throw new Error('No auth tokens');
+  const emitAuthSessionChanged = (event: AuthSessionChangedEvent): void => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) {
+        window.webContents.send(AuthIpcChannel.SessionChanged, event);
+      }
+    }
+  };
 
-    const doFetch = (accessToken: string) =>
-      net.fetch(url, {
-        ...options,
-        headers: {
-          ...(options?.headers as Record<string, string>),
-          Authorization: `Bearer ${accessToken}`,
-        },
+  const authSessionManager = new AuthSessionManager({
+    getTokens: getAuthTokens,
+    saveTokens: tokens => saveAuthTokens(tokens.accessToken, tokens.refreshToken),
+    fetch: (url, options) => net.fetch(url, options),
+    getRefreshUrl: () => `${getServerApiBaseUrl()}/api/auth/refresh`,
+    buildRefreshRequestBody: refreshToken => JSON.stringify(withKeyfromBody({ refreshToken })),
+    onTerminalFailure: () => {
+      clearLocalAuthSession({
+        reason: AuthSessionChangeReason.RefreshRejected,
+        notifyRenderer: true,
       });
+    },
+    onRefreshSuccess: result => {
+      syncOpenClawConfig({
+        reason: `token-refresh:${result.reason}`,
+        restartGatewayIfRunning: false,
+      }).catch((error) => {
+        console.warn('[Auth] post-refresh OpenClaw config sync failed:', error);
+      });
+    },
+    onLifecycleEvent: emitAuthLifecycleEvent,
+    log: {
+      info: message => console.log(message),
+      warn: (message, error) => {
+        if (error === undefined) {
+          console.warn(message);
+        } else {
+          console.warn(message, error);
+        }
+      },
+    },
+  });
+  waitForPendingTokenRefresh = () => authSessionManager.waitForPendingRefresh();
 
-    let resp = await doFetch(tokens.accessToken);
-
-    if (resp.status === 401 && tokens.refreshToken) {
-      const refreshedAccessToken = await refreshOnce('passive');
-      if (refreshedAccessToken) {
-        resp = await doFetch(refreshedAccessToken);
-      }
-    }
-
-    return resp;
-  };
+  const fetchWithAuth = (url: string, options?: RequestInit): Promise<Response> =>
+    authSessionManager.fetchWithAuth(url, options);
 
   type AvailableServerModel = ServerModelMetadataInput & {
     modelId: string;
@@ -5387,7 +5382,7 @@ if (!gotTheLock) {
             emitMediaTaskMessage(tracker.sessionId, lines.join('\n'));
           }
           BrowserWindow.getAllWindows().forEach(win => {
-            if (!win.isDestroyed()) win.webContents.send('auth:quotaChanged');
+            if (!win.isDestroyed()) win.webContents.send(AuthIpcChannel.QuotaChanged);
           });
         }
       } catch {
@@ -5556,6 +5551,42 @@ if (!gotTheLock) {
     cachedMediaGenerationEntitled = defaultGateState.mediaGenerationEntitled;
   };
 
+  const clearLocalAuthSession = (options: {
+    reason: AuthSessionChangeReason;
+    notifyRenderer: boolean;
+  }): void => {
+    const previousQuotaGateState = getAuthQuotaGateState();
+    clearAuthTokens();
+    clearAuthUser();
+    clearServerModelMetadata();
+    resetAuthQuotaGateState();
+
+    const quotaGateSyncScheduled = syncOpenClawConfigIfAuthQuotaGateChanged(previousQuotaGateState);
+    if (!quotaGateSyncScheduled) {
+      const syncReason = options.reason === AuthSessionChangeReason.RefreshRejected
+        ? 'auth-session-expired-server-models-cleared'
+        : 'auth-logout-server-models-cleared';
+      syncOpenClawConfig({
+        reason: syncReason,
+        restartGatewayIfRunning: false,
+      }).catch(error => {
+        console.warn('[Auth] failed to sync OpenClaw config after auth cleanup:', error);
+      });
+    }
+
+    if (options.notifyRenderer) {
+      emitAuthSessionChanged({
+        status: AuthSessionStatus.Expired,
+        reason: options.reason,
+      });
+      emitAuthLifecycleEvent({
+        eventType: AuthLifecycleEventType.TerminalExpired,
+        outcome: AuthSessionStatus.Expired,
+        reason: options.reason,
+      });
+    }
+  };
+
   /**
    * Normalize quota data from various server response formats into a unified shape.
    */
@@ -5612,7 +5643,7 @@ if (!gotTheLock) {
     }
   });
 
-  ipcMain.handle('auth:exchange', async (_event, { code }: { code: string }) => {
+  ipcMain.handle(AuthIpcChannel.Exchange, async (_event, { code }: { code: string }) => {
     try {
       const serverBaseUrl = getServerApiBaseUrl();
       const exchangeUrl = `${serverBaseUrl}/api/auth/exchange`;
@@ -5654,19 +5685,39 @@ if (!gotTheLock) {
     }
   });
 
-  ipcMain.handle('auth:getUser', async () => {
+  ipcMain.handle(AuthIpcChannel.GetUser, async () => {
     try {
       const tokens = getAuthTokens();
-      if (!tokens) return { success: false };
+      if (!tokens) {
+        return {
+          success: false,
+          status: AuthSessionStatus.Unauthenticated,
+          hasCredentials: false,
+        };
+      }
       const serverBaseUrl = getServerApiBaseUrl();
       // Fetch user profile
       const profileResp = await fetchWithAuth(`${serverBaseUrl}/api/user/profile`);
-      if (!profileResp.ok) return { success: false };
+      if (!profileResp.ok) {
+        return {
+          success: false,
+          status: AuthSessionStatus.TemporarilyUnavailable,
+          hasCredentials: true,
+          cachedUser: getAuthUser(),
+        };
+      }
       const profileBody = (await profileResp.json()) as {
         code: number;
         data: Record<string, unknown>;
       };
-      if (profileBody.code !== 0 || !profileBody.data) return { success: false };
+      if (profileBody.code !== 0 || !profileBody.data) {
+        return {
+          success: false,
+          status: AuthSessionStatus.TemporarilyUnavailable,
+          hasCredentials: true,
+          cachedUser: getAuthUser(),
+        };
+      }
       saveAuthUser(profileBody.data);
       // Fetch quota separately
       const quotaResp = await fetchWithAuth(`${serverBaseUrl}/api/user/quota`);
@@ -5683,13 +5734,29 @@ if (!gotTheLock) {
         }
       }
       console.log('[Auth] getUser profile data:', JSON.stringify(profileBody.data));
-      return { success: true, user: profileBody.data, quota };
-    } catch {
-      return { success: false };
+      return {
+        success: true,
+        status: AuthSessionStatus.Authenticated,
+        user: profileBody.data,
+        quota,
+      };
+    } catch (error) {
+      const status = resolveAuthSessionStatusFromError(error);
+      if (status === AuthSessionStatus.TemporarilyUnavailable) {
+        console.warn('[Auth] getUser temporarily unavailable:', error);
+      }
+      return {
+        success: false,
+        status,
+        hasCredentials: status !== AuthSessionStatus.Unauthenticated && Boolean(getAuthTokens()),
+        cachedUser: status === AuthSessionStatus.TemporarilyUnavailable
+          ? getAuthUser()
+          : null,
+      };
     }
   });
 
-  ipcMain.handle('auth:getQuota', async () => {
+  ipcMain.handle(AuthIpcChannel.GetQuota, async () => {
     try {
       const tokens = getAuthTokens();
       if (!tokens) return { success: false };
@@ -5707,7 +5774,7 @@ if (!gotTheLock) {
     }
   });
 
-  ipcMain.handle('auth:getProfileSummary', async () => {
+  ipcMain.handle(AuthIpcChannel.GetProfileSummary, async () => {
     try {
       const tokens = getAuthTokens();
       if (!tokens) return { success: false };
@@ -5724,7 +5791,7 @@ if (!gotTheLock) {
     }
   });
 
-  ipcMain.handle('auth:claimCreditsFinalReward', async (_event, payload: { campaignCode?: string }) => {
+  ipcMain.handle(AuthIpcChannel.ClaimCreditsFinalReward, async (_event, payload: { campaignCode?: string }) => {
     try {
       const campaignCode = payload?.campaignCode?.trim();
       if (!campaignCode) return { success: false, error: 'Missing campaign code' };
@@ -5752,7 +5819,7 @@ if (!gotTheLock) {
     }
   });
 
-  ipcMain.handle('auth:getActiveClientBanner', async () => {
+  ipcMain.handle(AuthIpcChannel.GetActiveClientBanner, async () => {
     try {
       const serverBaseUrl = getServerApiBaseUrl();
       const url = appendKeyfromQuery(`${serverBaseUrl}/api/client-banners/active?placement=desktop_sidebar`);
@@ -5766,7 +5833,7 @@ if (!gotTheLock) {
     }
   });
 
-  ipcMain.handle('auth:getActiveClientBanners', async () => {
+  ipcMain.handle(AuthIpcChannel.GetActiveClientBanners, async () => {
     try {
       const serverBaseUrl = getServerApiBaseUrl();
       const url = appendKeyfromQuery(`${serverBaseUrl}/api/client-banners/active-list?placement=desktop_sidebar`);
@@ -5780,7 +5847,7 @@ if (!gotTheLock) {
     }
   });
 
-  ipcMain.handle('auth:logout', async () => {
+  ipcMain.handle(AuthIpcChannel.Logout, async () => {
     try {
       const tokens = getAuthTokens();
       if (tokens) {
@@ -5800,52 +5867,34 @@ if (!gotTheLock) {
             /* best-effort */
           });
       }
-      clearAuthTokens();
-      clearAuthUser();
-      clearServerModelMetadata();
-      const previousQuotaGateState = getAuthQuotaGateState();
-      resetAuthQuotaGateState();
-      const quotaGateSyncScheduled = syncOpenClawConfigIfAuthQuotaGateChanged(previousQuotaGateState);
-      if (!quotaGateSyncScheduled) {
-        syncOpenClawConfig({
-          reason: 'auth-logout-server-models-cleared',
-          restartGatewayIfRunning: false,
-        }).catch((error) => {
-          console.warn('[Auth] failed to sync OpenClaw config after logout:', error);
-        });
-      }
+      clearLocalAuthSession({
+        reason: AuthSessionChangeReason.UserLogout,
+        notifyRenderer: false,
+      });
       console.log('[Auth] cleared login state and scheduled server model config refresh');
       return { success: true };
     } catch (error) {
       console.warn('[Auth] logout cleanup encountered an error; clearing local state anyway:', error);
-      const previousQuotaGateState = getAuthQuotaGateState();
-      clearAuthTokens();
-      clearAuthUser();
-      clearServerModelMetadata();
-      resetAuthQuotaGateState();
-      const quotaGateSyncScheduled = syncOpenClawConfigIfAuthQuotaGateChanged(previousQuotaGateState);
-      if (!quotaGateSyncScheduled) {
-        syncOpenClawConfig({
-          reason: 'auth-logout-server-models-cleared',
-          restartGatewayIfRunning: false,
-        }).catch((syncError) => {
-          console.warn('[Auth] failed to sync OpenClaw config after logout cleanup:', syncError);
-        });
-      }
+      clearLocalAuthSession({
+        reason: AuthSessionChangeReason.UserLogout,
+        notifyRenderer: false,
+      });
       return { success: true };
     }
   });
 
-  ipcMain.handle('auth:refreshToken', async () => {
+  ipcMain.handle(AuthIpcChannel.RefreshToken, async () => {
     try {
-      const accessToken = await refreshOnce('manual');
-      return accessToken ? { success: true, accessToken } : { success: false };
+      const result = await authSessionManager.refresh(AuthRefreshReason.Manual);
+      return result.outcome === AuthRefreshOutcome.Success
+        ? { success: true, accessToken: result.accessToken, outcome: result.outcome }
+        : { success: false, outcome: result.outcome };
     } catch {
       return { success: false };
     }
   });
 
-  ipcMain.handle('auth:getAccessToken', async () => {
+  ipcMain.handle(AuthIpcChannel.GetAccessToken, async () => {
     const tokens = getAuthTokens();
     return tokens?.accessToken || null;
   });
@@ -5891,7 +5940,7 @@ if (!gotTheLock) {
     }
   });
 
-  ipcMain.handle('auth:getModels', async () => {
+  ipcMain.handle(AuthIpcChannel.GetModels, async () => {
     try {
       const tokens = getAuthTokens();
       if (!tokens) {
@@ -11610,7 +11659,7 @@ if (!gotTheLock) {
         );
         const expiresAt = payload.exp * 1000;
         if (expiresAt - Date.now() < 5 * 60 * 1000) {
-          void refreshOnce('proactive'); // fire-and-forget
+          void authSessionManager.refresh(AuthRefreshReason.Proactive); // fire-and-forget
         }
       } catch {
         /* unable to parse JWT, return token as-is */
@@ -11640,43 +11689,28 @@ if (!gotTheLock) {
         });
     }
 
-    registerProxyTokenRefresher('lobsterai-server', async () => {
-      const tokens = getAuthTokens();
-      if (!tokens?.refreshToken) return null;
-      const serverBaseUrl = getServerApiBaseUrl();
-      try {
-        const refreshUrl = `${serverBaseUrl}/api/auth/refresh`;
-        console.log(`[Auth] requesting proxy token refresh at ${refreshUrl}`);
-        const resp = await net.fetch(refreshUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(withKeyfromBody({ refreshToken: tokens.refreshToken })),
-        });
-        if (resp.ok) {
-          const body = (await resp.json()) as {
-            code: number;
-            data: { accessToken: string; refreshToken?: string };
-          };
-          if (body.code === 0 && body.data) {
-            saveAuthTokens(body.data.accessToken, body.data.refreshToken || tokens.refreshToken);
-            console.log('[Auth] proxy token refresh succeeded');
-            return body.data.accessToken;
-          }
-        }
-      } catch (err) {
-        console.warn('[Auth] proxy token refresh failed:', err);
+    registerProxyTokenRefresher(ProviderName.LobsteraiServer, async rejectedToken => {
+      const latestAccessToken = getAuthTokens()?.accessToken;
+      if (latestAccessToken && rejectedToken && latestAccessToken !== rejectedToken) {
+        return {
+          outcome: AuthRefreshOutcome.Success,
+          accessToken: latestAccessToken,
+        };
       }
-      return null;
+      return authSessionManager.refresh(AuthRefreshReason.CompatProxy);
     });
 
-    registerProxyTokenRefresher('github-copilot', async () => {
+    registerProxyTokenRefresher(ProviderName.Copilot, async () => {
       try {
         const { refreshCopilotTokenNow } = await import('./libs/copilotTokenManager');
         const refreshed = await refreshCopilotTokenNow();
-        return refreshed.copilotToken;
+        return {
+          outcome: AuthRefreshOutcome.Success,
+          accessToken: refreshed.copilotToken,
+        };
       } catch (err) {
         console.warn('[Auth] Copilot proxy token refresh failed:', err);
-        return null;
+        return { outcome: AuthRefreshOutcome.TransientFailure };
       }
     });
 
@@ -11686,7 +11720,7 @@ if (!gotTheLock) {
     try {
       await startOpenClawTokenProxy({
         getAuthTokens,
-        refreshToken: refreshOnce,
+        refreshToken: reason => authSessionManager.refresh(reason),
         getServerBaseUrl: getServerApiBaseUrl,
         getClientVersion: () => app.getVersion(),
       });
