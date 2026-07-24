@@ -2,7 +2,15 @@ import { EyeIcon, EyeSlashIcon, XCircleIcon as XCircleIconSolid } from '@heroico
 import { ArrowTopRightOnSquareIcon, CheckCircleIcon, ExclamationCircleIcon, KeyIcon, MagnifyingGlassIcon, ShieldCheckIcon, SignalIcon, XCircleIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import React from 'react';
 
-import { ProviderAuthType, ProviderName, ProviderRegistry } from '../../../shared/providers';
+import {
+  isOfficialMoonshotChatCompletionsUrl,
+  ModelCompatibilityMode,
+  type ModelCompatibilityMode as ModelCompatibilityModeType,
+  normalizeModelIdForComparison,
+  ProviderAuthType,
+  ProviderName,
+  ProviderRegistry,
+} from '../../../shared/providers';
 import { defaultConfig, getCustomProviderDefaultName, getProviderDisplayName, isCustomProvider } from '../../config';
 import { getProviderIcon } from '../../providers/uiRegistry';
 import { i18nService } from '../../services/i18n';
@@ -20,6 +28,7 @@ import {
   type ProvidersConfig,
   type ProviderType,
   shouldShowApiFormatSelector,
+  supportsKimiK3Compatibility,
 } from './modelProviderUtils';
 
 // Context Window slider constants & helpers
@@ -162,7 +171,15 @@ export interface ModelSettingsSectionProps {
   handleCopilotCancelAuth: () => void;
   handleTestConnection: () => void;
   handleAddModel: () => void;
-  handleEditModel: (modelId: string, modelName: string, supportsImage?: boolean, supportsThinking?: boolean, contextWindow?: number, customParams?: Record<string, unknown>) => void;
+  handleEditModel: (
+    modelId: string,
+    modelName: string,
+    supportsImage?: boolean,
+    supportsThinking?: boolean,
+    contextWindow?: number,
+    customParams?: Record<string, unknown>,
+    compatibilityMode?: ModelCompatibilityModeType,
+  ) => void;
   handleDeleteModel: (modelId: string) => void;
 }
 
@@ -182,6 +199,9 @@ export interface ModelEditorDialogProps {
   setNewModelContextWindow: (v: number | undefined) => void;
   newModelCustomParams: string;
   setNewModelCustomParams: (v: string) => void;
+  newModelCompatibilityMode: ModelCompatibilityModeType;
+  setNewModelCompatibilityMode: (v: ModelCompatibilityModeType) => void;
+  activeProviderConfig: ProviderConfig;
   modelFormError: string | null;
   setModelFormError: (v: string | null) => void;
   handleSaveNewModel: () => void;
@@ -205,6 +225,9 @@ export const ModelEditorDialog: React.FC<ModelEditorDialogProps> = ({
   setNewModelContextWindow,
   newModelCustomParams,
   setNewModelCustomParams,
+  newModelCompatibilityMode,
+  setNewModelCompatibilityMode,
+  activeProviderConfig,
   modelFormError,
   setModelFormError,
   handleSaveNewModel,
@@ -216,6 +239,23 @@ export const ModelEditorDialog: React.FC<ModelEditorDialogProps> = ({
   if (!isAddingModel && !isEditingModel) {
     return null;
   }
+
+  const isCustomModelProvider = isCustomProvider(activeProvider);
+  const isMoonshotProvider = activeProvider === ProviderName.Moonshot;
+  const supportsKimiK3Transport = supportsKimiK3Compatibility(
+    activeProvider,
+    activeProviderConfig.apiFormat,
+  );
+  const isMoonshotOfficialRoute = isMoonshotProvider
+    && !activeProviderConfig.codingPlanEnabled
+    && isOfficialMoonshotChatCompletionsUrl(activeProviderConfig.baseUrl);
+  const isOfficialManagedKimiK3 = supportsKimiK3Transport
+    && isMoonshotOfficialRoute
+    && normalizeModelIdForComparison(newModelId) === 'kimik3';
+  const showCompatibilityMode = isCustomModelProvider
+    || (isMoonshotProvider && !activeProviderConfig.codingPlanEnabled);
+  const canExplicitlySelectKimiK3 = supportsKimiK3Transport
+    && (isCustomModelProvider || !isMoonshotOfficialRoute);
 
   return (
     <div
@@ -455,6 +495,68 @@ export const ModelEditorDialog: React.FC<ModelEditorDialogProps> = ({
                 </p>
               </div>
             </div>
+            {showCompatibilityMode && (
+              <div className="flex items-start gap-3">
+                <label className="w-24 shrink-0 text-xs font-medium text-secondary pt-2 text-right">
+                  {i18nService.t('modelCompatibilityMode')}
+                </label>
+                <div className="flex-1 min-w-0">
+                  {isOfficialManagedKimiK3 ? (
+                    <div className="rounded-lg border border-primary/25 bg-primary-muted px-3 py-2 text-[11px] leading-5 text-primary">
+                      {i18nService.t('modelCompatibilityMoonshotManaged')}
+                    </div>
+                  ) : (
+                    <>
+                      <select
+                        value={newModelCompatibilityMode}
+                        onChange={(event) => {
+                          setNewModelCompatibilityMode(event.target.value as ModelCompatibilityModeType);
+                          if (modelFormError) {
+                            setModelFormError(null);
+                          }
+                        }}
+                        className="block w-full rounded-xl bg-surface-inset border-border border focus:border-primary focus:ring-1 focus:ring-primary/30 text-foreground px-3 py-2 text-xs"
+                      >
+                        <option value={ModelCompatibilityMode.Auto}>
+                          {i18nService.t('modelCompatibilityAuto')}
+                        </option>
+                        <option value={ModelCompatibilityMode.Standard}>
+                          {i18nService.t('modelCompatibilityStandard')}
+                        </option>
+                        {canExplicitlySelectKimiK3 && (
+                          <option value={ModelCompatibilityMode.MoonshotKimiK3}>
+                            {i18nService.t('modelCompatibilityKimiK3')}
+                          </option>
+                        )}
+                      </select>
+                      <p className="mt-1 text-[11px] text-muted">
+                        {i18nService.t('modelCompatibilityHint')}
+                      </p>
+                      {isMoonshotProvider && !isMoonshotOfficialRoute && (
+                        <p className="mt-1 text-[11px] text-amber-600 dark:text-amber-400">
+                          {i18nService.t('modelCompatibilityMoonshotCustomRoute')}
+                        </p>
+                      )}
+                    </>
+                  )}
+                  {(isOfficialManagedKimiK3
+                    || (
+                      supportsKimiK3Transport
+                      && newModelCompatibilityMode === ModelCompatibilityMode.MoonshotKimiK3
+                    )) && (
+                    <p className="mt-1 text-[11px] text-muted">
+                      {i18nService.t('modelCompatibilityKimiK3Hint')}
+                    </p>
+                  )}
+                  {!supportsKimiK3Transport
+                    && newModelCompatibilityMode === ModelCompatibilityMode.MoonshotKimiK3 && (
+                    <p className="mt-1 text-[11px] text-amber-600 dark:text-amber-400">
+                      {i18nService.t('modelCompatibilityKimiK3RequiresOpenAI')}
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
             <div className="flex items-start gap-3">
               <label className="w-24 shrink-0 text-xs font-medium text-secondary pt-2 text-right">
                 {i18nService.t('customParams')}
@@ -462,14 +564,30 @@ export const ModelEditorDialog: React.FC<ModelEditorDialogProps> = ({
               <div className="flex-1 min-w-0">
                 <textarea
                   value={newModelCustomParams}
-                  onChange={(e) => setNewModelCustomParams(e.target.value)}
-                  placeholder={'{\n  "reasoning_effort": "high"\n}'}
+                  onChange={(e) => {
+                    setNewModelCustomParams(e.target.value);
+                    if (modelFormError) {
+                      setModelFormError(null);
+                    }
+                  }}
+                  placeholder={
+                    isOfficialManagedKimiK3
+                      || newModelCompatibilityMode === ModelCompatibilityMode.MoonshotKimiK3
+                      ? '{\n}'
+                      : '{\n  "reasoning_effort": "high"\n}'
+                  }
                   rows={3}
                   className="w-full rounded-lg bg-surface-inset border-border border focus:border-primary focus:ring-1 focus:ring-primary/30 text-foreground px-2.5 py-1.5 text-xs font-mono resize-y"
                 />
                 <p className="mt-1 text-[11px] text-muted">
                   {i18nService.t('customParamsHint')}
                 </p>
+                {(isOfficialManagedKimiK3
+                  || newModelCompatibilityMode === ModelCompatibilityMode.MoonshotKimiK3) && (
+                  <p className="mt-1 text-[11px] text-amber-600 dark:text-amber-400">
+                    {i18nService.t('kimiK3CustomParamsReservedHint')}
+                  </p>
+                )}
               </div>
             </div>
           </div>
@@ -1795,7 +1913,10 @@ const ModelSettingsSection: React.FC<ModelSettingsSectionProps> = ({
               )}
 
               {/* API 格式选择器 */}
-              {shouldShowApiFormatSelector(activeProvider) && !(activeProvider === 'minimax' && minimaxIsOAuthMode) && (
+              {shouldShowApiFormatSelector(
+                activeProvider,
+                providers[activeProvider].apiFormat,
+              ) && !(activeProvider === 'minimax' && minimaxIsOAuthMode) && (
                 <div>
                   <label htmlFor={`${activeProvider}-apiFormat`} className="block text-xs font-medium text-foreground mb-1">
                     {i18nService.t('apiFormat')}
@@ -2085,7 +2206,15 @@ const ModelSettingsSection: React.FC<ModelSettingsSectionProps> = ({
                           )}
                           <button
                             type="button"
-                            onClick={() => handleEditModel(model.id, model.name, model.supportsImage, model.supportsThinking, model.contextWindow, model.customParams)}
+                            onClick={() => handleEditModel(
+                              model.id,
+                              model.name,
+                              model.supportsImage,
+                              model.supportsThinking,
+                              model.contextWindow,
+                              model.customParams,
+                              model.compatibilityMode,
+                            )}
                             className="p-0.5 text-secondary hover:text-primary opacity-0 group-hover:opacity-100 transition-opacity"
                           >
                             <EditIcon className="h-3.5 w-3.5" />

@@ -1,4 +1,5 @@
 import { ProviderName } from '@shared/providers';
+import type { ModelRuntimeProfile } from '@shared/providers/modelRuntimeProfiles';
 
 import { store } from '../store';
 import {
@@ -38,6 +39,26 @@ export interface PricingCatalogResponse {
   textModels?: PricingCatalogTextModel[];
   imageModels?: unknown[];
   videoModels?: unknown[];
+}
+
+export interface AvailableServerModelEntry {
+  modelId: string;
+  modelName: string;
+  provider: string;
+  apiFormat: string;
+  runtimeProfile?: ModelRuntimeProfile;
+  supportsImage?: boolean;
+  supportsVideo?: boolean;
+  supportsThinking?: boolean;
+  supportsToolCalling?: boolean;
+  agenticReady?: boolean;
+  contextWindow?: number;
+  maxTokens?: number;
+  explicitContextCache?: boolean;
+  costMultiplier?: number;
+  description?: string;
+  accessible?: boolean;
+  restrictionHint?: string;
 }
 
 const readString = (value: unknown): string => (
@@ -112,6 +133,32 @@ export function mapPricingCatalogToPublicServerModels(
   return mapPricingCatalogTextModelsToServerModels(
     Array.isArray(catalog.textModels) ? catalog.textModels : [],
   );
+}
+
+export function mapAvailableServerModelsToModels(
+  models: AvailableServerModelEntry[],
+): Model[] {
+  return models.map(model => ({
+    id: model.modelId,
+    name: model.modelName,
+    provider: model.provider,
+    providerKey: ProviderName.LobsteraiServer,
+    isServerModel: true,
+    serverApiFormat: model.apiFormat,
+    runtimeProfile: model.runtimeProfile,
+    supportsImage: model.supportsImage ?? false,
+    supportsVideo: model.supportsVideo ?? false,
+    supportsThinking: model.supportsThinking ?? false,
+    supportsToolCalling: model.supportsToolCalling,
+    agenticReady: model.agenticReady,
+    contextWindow: model.contextWindow,
+    maxTokens: model.maxTokens,
+    explicitContextCache: model.explicitContextCache ?? false,
+    description: model.description,
+    costMultiplier: model.costMultiplier,
+    accessible: model.accessible ?? true,
+    restrictionHint: model.restrictionHint ?? undefined,
+  }));
 }
 
 class AuthService {
@@ -348,22 +395,7 @@ class AuthService {
     try {
       const modelsResult = await window.electron.auth.getModels();
       if (modelsResult.success && modelsResult.models) {
-        const serverModels: Model[] = modelsResult.models.map((m: { modelId: string; modelName: string; provider: string; apiFormat: string; supportsImage?: boolean; supportsThinking?: boolean; contextWindow?: number; explicitContextCache?: boolean; costMultiplier?: number; description?: string; accessible?: boolean; restrictionHint?: string }) => ({
-          id: m.modelId,
-          name: m.modelName,
-          provider: m.provider,
-          providerKey: 'lobsterai-server',
-          isServerModel: true,
-          serverApiFormat: m.apiFormat,
-          supportsImage: m.supportsImage ?? false,
-          supportsThinking: m.supportsThinking ?? false,
-          contextWindow: m.contextWindow,
-          explicitContextCache: m.explicitContextCache ?? false,
-          description: m.description,
-          costMultiplier: m.costMultiplier,
-          accessible: m.accessible ?? true,
-          restrictionHint: m.restrictionHint ?? undefined,
-        }));
+        const serverModels = mapAvailableServerModelsToModels(modelsResult.models);
         store.dispatch(setServerModels(serverModels));
         console.debug(`[Auth] loaded ${serverModels.length} server model(s) into renderer state`);
       } else {

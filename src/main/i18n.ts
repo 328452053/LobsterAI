@@ -53,6 +53,8 @@ const translations: Record<LanguageType, Record<string, string>> = {
     // Thinking-only hint
     taskThinkingOnly:
       '[模型未输出内容] 模型已完成思考但未生成可见回复。你可以继续对话，让模型重新输出结果。',
+    taskOutputTruncated:
+      '[输出未完成] 模型已达到本次输出长度上限。部分结果已保留，但任务未确认完成；你可以继续对话以从中断处继续。',
 
     // Feishu bot install
     feishuVerifyCredentialsFailed: '凭证验证失败，请检查 App ID 和 App Secret 是否正确',
@@ -83,6 +85,10 @@ const translations: Record<LanguageType, Record<string, string>> = {
     coworkErrorContentFiltered: '内容未通过安全审核，请修改后重试。',
     coworkErrorServerError: '服务端出现错误，请稍后重试。',
     coworkErrorEngineNotReady: 'AI 引擎正在启动中，请稍等几秒后重试。',
+    serverModelMetadataUnavailable: '套餐模型信息暂不可用，请刷新后重试。',
+    serverModelRuntimeProfileUnsupported: '该套餐模型的任务兼容配置不受当前版本支持。',
+    serverModelToolCallingUnavailable: '该模型尚未开放任务工具调用。',
+    serverModelAgenticNotReady: '该模型正在进行任务能力验证，请稍后再试。',
     coworkErrorModelStreamEmptySseData:
       '模型流式响应格式异常：模型服务返回了空的 SSE data 帧。请稍后重试，或检查当前模型代理配置。',
     coworkErrorModelStreamOnlyEmptySseData:
@@ -348,6 +354,8 @@ const translations: Record<LanguageType, Record<string, string>> = {
     // Thinking-only hint
     taskThinkingOnly:
       '[No output] The model finished thinking but did not generate a visible reply. You can continue the conversation to ask it to output the result.',
+    taskOutputTruncated:
+      '[Output incomplete] The model reached the output limit for this response. The partial result was preserved, but the task is not confirmed complete. Continue the conversation to resume.',
 
     // Feishu bot install
     feishuVerifyCredentialsFailed:
@@ -380,6 +388,14 @@ const translations: Record<LanguageType, Record<string, string>> = {
       'Content did not pass the safety review. Please modify and try again.',
     coworkErrorServerError: 'Server error occurred. Please try again later.',
     coworkErrorEngineNotReady: 'AI engine is starting up. Please wait a few seconds and try again.',
+    serverModelMetadataUnavailable:
+      'Package model information is temporarily unavailable. Refresh and try again.',
+    serverModelRuntimeProfileUnsupported:
+      'This package model task profile is not supported by the current version.',
+    serverModelToolCallingUnavailable:
+      'Agent tool calling is not enabled for this model yet.',
+    serverModelAgenticNotReady:
+      'This model is still undergoing agent capability validation. Please try again later.',
     coworkErrorModelStreamEmptySseData:
       'Model stream format error: the model service returned an empty SSE data frame. Please retry later or check the current model proxy configuration.',
     coworkErrorModelStreamOnlyEmptySseData:

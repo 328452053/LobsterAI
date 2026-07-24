@@ -116,7 +116,11 @@ import {
   OpenClawGatewayRepairErrorCode,
 } from '../shared/openclawEngine/constants';
 import { PlatformRegistry } from '../shared/platform';
-import { OpenClawProviderId, ProviderName } from '../shared/providers';
+import {
+  ModelRuntimeProfile,
+  OpenClawProviderId,
+  ProviderName,
+} from '../shared/providers';
 import {
   ShareDeploymentCandidateSource,
   type ShareDeploymentCreateNodeInput,
@@ -196,11 +200,16 @@ import type { BrowserAnnotationAssetIdentity, SaveBrowserAnnotationAssetInput } 
 import { BrowserAnnotationAssetStore } from './libs/browserAnnotationAssetStore';
 import {
   clearServerModelMetadata,
+  evaluateServerModelRunGate,
   getAllServerModelMetadata,
   getCurrentApiConfig,
+  getServerModelMetadata,
+  isKnownPackageKimiK3ModelId,
   resolveAllEnabledProviderConfigs,
   resolveCurrentApiConfig,
   resolveRawApiConfig,
+  type ServerModelMetadataInput,
+  ServerModelRunGateReason,
   setAuthTokensGetter,
   setServerBaseUrlGetter,
   setStoreGetter,
@@ -275,7 +284,15 @@ import { packageHtmlFile } from './libs/htmlShare/htmlSharePackager';
 import { getKeyfromAttribution, initializeKeyfromAttribution } from './libs/keyfromAttribution';
 import { exportLogsZip } from './libs/logExport';
 import { inferImageMimeTypeFromDataUrl, type PersistedGeneratedImageAsset, persistGeneratedImageAssets, type PersistGeneratedImageAssetsResult, persistGeneratedVideoAssets, type RemoteGeneratedMediaAsset } from './libs/mediaAssetPersistence';
-import { migrateAgentModelRefs, parsePrimaryModelRef, resolveQualifiedAgentModelRef } from './libs/openclawAgentModels';
+import {
+  migrateAgentModelRefs,
+  parsePrimaryModelRef,
+  resolveQualifiedAgentModelRef,
+  resolveServerModelRefForRun,
+  ServerModelRefResolutionStatus,
+  shouldSyncServerModelConfig,
+  syncServerModelConfigIfNeeded,
+} from './libs/openclawAgentModels';
 import {
   buildManagedSessionKey,
   DEFAULT_MANAGED_AGENT_ID,
@@ -344,7 +361,10 @@ import {
 } from './libs/shareDeployment/shareDeploymentOperationCoordinator';
 import { SqliteBackupTrigger } from './libs/sqliteBackup/constants';
 import { SqliteBackupManager } from './libs/sqliteBackup/sqliteBackupManager';
-import { runStartupCacheWarmup } from './libs/startupCacheWarmup';
+import {
+  buildServerModelCapabilityHeaders,
+  runStartupCacheWarmup,
+} from './libs/startupCacheWarmup';
 import {
   applySystemProxyEnv,
   resolveSystemProxyUrlForTargets,
@@ -1325,6 +1345,20 @@ const buildAvailableOpenClawProviders = (): Record<string, { models: Array<{ id:
         providerMap[selection.providerId].models.push({ id: selection.sessionModelId });
       }
     }
+  }
+
+  const serverModelIds = getAllServerModelMetadata()
+    .map(model => model.modelId.trim())
+    .filter(Boolean);
+  if (serverModelIds.length > 0) {
+    const serverProvider = providerMap[OpenClawProviderId.LobsteraiServer]
+      ?? { models: [] };
+    for (const modelId of serverModelIds) {
+      if (!serverProvider.models.some(model => model.id === modelId)) {
+        serverProvider.models.push({ id: modelId });
+      }
+    }
+    providerMap[OpenClawProviderId.LobsteraiServer] = serverProvider;
   }
 
   return providerMap;
@@ -2399,11 +2433,7 @@ const _syncOpenClawConfigImpl = async (
     console.log(`${D()} SECRET ENV VARS CHANGED!`);
     if (added.length) console.log(`${D()}   added: ${added.join(', ')}`);
     if (removed.length) console.log(`${D()}   removed: ${removed.join(', ')}`);
-    for (const k of modified) {
-      const p = (effectivePrevSecretEnvVars[k] || '').slice(0, 12);
-      const n = (effectiveNextSecretEnvVars[k] || '').slice(0, 12);
-      console.log(`${D()}   modified: ${k} prev=${p}… next=${n}…`);
-    }
+    if (modified.length) console.log(`${D()}   modified: ${modified.join(', ')}`);
   } else {
     console.log(`${D()} secretEnvVars unchanged (${Object.keys(effectiveNextSecretEnvVars).length}/${Object.keys(nextSecretEnvVars).length} referenced keys)`);
   }
@@ -4362,6 +4392,245 @@ if (!gotTheLock) {
     return resp;
   };
 
+  type AvailableServerModel = ServerModelMetadataInput & {
+    modelId: string;
+    modelName: string;
+    provider: string;
+    apiFormat: string;
+    costMultiplier?: number;
+    description?: string;
+    accessible?: boolean;
+    restrictionHint?: string;
+  };
+
+  const loadAvailableServerModels = async (options: {
+    reason: string;
+    awaitConfigSync?: boolean;
+    forceConfigSync?: boolean;
+  }): Promise<AvailableServerModel[]> => {
+    const serverBaseUrl = getServerApiBaseUrl();
+    const url = appendKeyfromQuery(`${serverBaseUrl}/api/models/available`);
+    console.log(`[Auth:getModels] requesting available models at ${url}`);
+    const resp = await fetchWithAuth(url, {
+      headers: buildServerModelCapabilityHeaders(app.getVersion()),
+    });
+    console.log('[Auth:getModels] Response status:', resp.status);
+    if (!resp.ok) {
+      throw new Error(`Server model request failed with HTTP ${resp.status}.`);
+    }
+
+    const data = (await resp.json()) as {
+      code: number;
+      message?: string;
+      data?: AvailableServerModel[];
+    };
+    console.log('[Auth:getModels] Response data:', JSON.stringify(data).slice(0, 500));
+    if (data.code !== 0 || !Array.isArray(data.data)) {
+      throw new Error(data.message || 'Server model response is invalid.');
+    }
+
+    const serverModelsChanged = updateServerModelMetadata(data.data);
+    const serverModelIds = data.data.map(model => model.modelId);
+    const serverModelsMissingFromConfig = !openClawConfigHasServerModels(serverModelIds);
+    const configSyncOptions = {
+      metadataChanged: serverModelsChanged,
+      modelsMissingFromConfig: serverModelsMissingFromConfig,
+      forceConfigSync: options.forceConfigSync,
+    };
+    if (shouldSyncServerModelConfig(configSyncOptions)) {
+      console.log(
+        `[Auth:getModels] syncing OpenClaw config for ${serverModelIds.length} server model(s); `
+        + `metadataChanged=${serverModelsChanged} missingFromConfig=${serverModelsMissingFromConfig} `
+        + `forced=${options.forceConfigSync === true}`,
+      );
+      const syncPromise = syncServerModelConfigIfNeeded({
+        ...configSyncOptions,
+        sync: () => syncOpenClawConfig({
+          reason: options.reason,
+          restartGatewayIfRunning: false,
+        }),
+      });
+      if (options.awaitConfigSync) {
+        await syncPromise;
+      } else {
+        syncPromise.catch((error) => {
+          console.warn('[Auth:getModels] failed to sync OpenClaw config after loading server models:', error);
+        });
+      }
+    } else {
+      console.debug('[Auth:getModels] server model metadata unchanged, skipping config sync');
+    }
+
+    return data.data.map((model) => {
+      const metadata = getServerModelMetadata(model.modelId);
+      return {
+        ...model,
+        runtimeProfile: metadata?.runtimeProfile,
+        supportsImage: metadata?.supportsImage,
+        supportsVideo: metadata?.supportsVideo,
+        supportsThinking: metadata?.supportsThinking,
+        supportsToolCalling: metadata?.supportsToolCalling,
+        agenticReady: metadata?.agenticReady,
+        contextWindow: metadata?.contextWindow,
+        maxTokens: metadata?.maxTokens,
+        explicitContextCache: metadata?.explicitContextCache,
+      };
+    });
+  };
+
+  let pendingServerModelPreflightRefresh: Promise<AvailableServerModel[]> | null = null;
+
+  const refreshServerModelsForRunPreflight = (): Promise<AvailableServerModel[]> => {
+    if (pendingServerModelPreflightRefresh) {
+      return pendingServerModelPreflightRefresh;
+    }
+    pendingServerModelPreflightRefresh = loadAvailableServerModels({
+      reason: 'server-model-run-preflight',
+      awaitConfigSync: true,
+      forceConfigSync: true,
+    }).finally(() => {
+      pendingServerModelPreflightRefresh = null;
+    });
+    return pendingServerModelPreflightRefresh;
+  };
+
+  const resolveCoworkRunModelRef = (options: {
+    sessionId?: string;
+    modelOverride?: string;
+    agentId?: string;
+  }): string => {
+    const session = options.sessionId
+      ? getCoworkStore().getSession(options.sessionId)
+      : null;
+    const agentId = options.agentId?.trim() || session?.agentId || 'main';
+    const rawModelRef = options.modelOverride?.trim()
+      || session?.modelOverride?.trim()
+      || getAgentManager().getAgent(agentId)?.model?.trim()
+      || resolveDefaultAgentModelRef();
+    return rawModelRef?.trim() || '';
+  };
+
+  const getServerModelRunGateError = (reason: ServerModelRunGateReason): string => {
+    switch (reason) {
+      case ServerModelRunGateReason.MetadataMissing:
+        return t('serverModelMetadataUnavailable');
+      case ServerModelRunGateReason.RuntimeProfileMissing:
+      case ServerModelRunGateReason.RuntimeProfileUnsupported:
+      case ServerModelRunGateReason.TransportUnsupported:
+        return t('serverModelRuntimeProfileUnsupported');
+      case ServerModelRunGateReason.ToolCallingUnavailable:
+        return t('serverModelToolCallingUnavailable');
+      case ServerModelRunGateReason.AgenticNotReady:
+        return t('serverModelAgenticNotReady');
+    }
+  };
+
+  const ensureServerModelReadyForRun = async (
+    modelRef: string,
+  ): Promise<{ allowed: true } | { allowed: false; error: string }> => {
+    const resolveRunModelRef = () => resolveServerModelRefForRun({
+      modelRef,
+      availableProviders: buildAvailableOpenClawProviders(),
+      isKnownServerModelCandidate: isKnownPackageKimiK3ModelId,
+    });
+    const blockForUnavailableIdentity = (
+      status: string,
+      modelId: string,
+      providerIds?: string[],
+    ): { allowed: false; error: string } => {
+      console.warn(
+        `[Cowork] blocked server model run for "${modelId}"; `
+        + `providerResolution=${status}`
+        + (providerIds?.length ? ` providers=${providerIds.join(',')}` : ''),
+      );
+      return {
+        allowed: false,
+        error: t('serverModelMetadataUnavailable'),
+      };
+    };
+
+    let resolution = resolveRunModelRef();
+    let refreshed = false;
+    if (resolution.status === ServerModelRefResolutionStatus.RefreshRequired) {
+      try {
+        await refreshServerModelsForRunPreflight();
+        refreshed = true;
+      } catch (error) {
+        console.warn(
+          `[Cowork] failed to refresh server model metadata before resolving "${resolution.modelId}":`,
+          error,
+        );
+        return {
+          allowed: false,
+          error: t('serverModelMetadataUnavailable'),
+        };
+      }
+      resolution = resolveRunModelRef();
+    }
+
+    if (resolution.status === ServerModelRefResolutionStatus.Ambiguous) {
+      return blockForUnavailableIdentity(
+        resolution.status,
+        resolution.modelId,
+        resolution.providerIds,
+      );
+    }
+    if (resolution.status === ServerModelRefResolutionStatus.RefreshRequired) {
+      return blockForUnavailableIdentity(resolution.status, resolution.modelId);
+    }
+    if (
+      resolution.status === ServerModelRefResolutionStatus.NonServer
+      || resolution.status === ServerModelRefResolutionStatus.Unresolved
+    ) {
+      return { allowed: true };
+    }
+
+    let gate = evaluateServerModelRunGate(resolution.modelId);
+    const requiresFreshK3Metadata = gate.allowed === true
+      && gate.metadata.runtimeProfile === ModelRuntimeProfile.MoonshotKimiK3;
+    if (!refreshed && (gate.allowed === false || requiresFreshK3Metadata)) {
+      try {
+        await refreshServerModelsForRunPreflight();
+        refreshed = true;
+      } catch (error) {
+        console.warn(
+          `[Cowork] failed to refresh server model metadata before run for "${resolution.modelId}":`,
+          error,
+        );
+        return {
+          allowed: false,
+          error: t('serverModelMetadataUnavailable'),
+        };
+      }
+      const refreshedResolution = resolveRunModelRef();
+      if (
+        refreshedResolution.status !== ServerModelRefResolutionStatus.Server
+        || refreshedResolution.modelId !== resolution.modelId
+      ) {
+        return blockForUnavailableIdentity(
+          refreshedResolution.status,
+          refreshedResolution.modelId,
+          'providerIds' in refreshedResolution
+            ? refreshedResolution.providerIds
+            : undefined,
+        );
+      }
+      resolution = refreshedResolution;
+      gate = evaluateServerModelRunGate(resolution.modelId);
+    }
+    if (gate.allowed === true) {
+      return { allowed: true };
+    }
+
+    console.warn(
+      `[Cowork] blocked server model run for "${resolution.modelId}"; reason=${gate.reason}.`,
+    );
+    return {
+      allowed: false,
+      error: getServerModelRunGateError(gate.reason),
+    };
+  };
+
   const extractSessionIdFromKey = (sessionKey: string): string | null =>
     resolveCoworkSessionIdByOpenClawSessionKey(getStore().getDatabase(), sessionKey);
 
@@ -5629,53 +5898,10 @@ if (!gotTheLock) {
         console.log('[Auth:getModels] No auth tokens available');
         return { success: false };
       }
-      const serverBaseUrl = getServerApiBaseUrl();
-      const url = appendKeyfromQuery(`${serverBaseUrl}/api/models/available`);
-      console.log(`[Auth:getModels] requesting available models at ${url}`);
-      const resp = await fetchWithAuth(url);
-      console.log('[Auth:getModels] Response status:', resp.status);
-      if (!resp.ok) {
-        console.log('[Auth:getModels] Response not ok:', resp.status, resp.statusText);
-        return { success: false };
-      }
-      const data = (await resp.json()) as {
-        code: number;
-        data: Array<{
-          modelId: string;
-          modelName: string;
-          provider: string;
-          apiFormat: string;
-          supportsImage?: boolean;
-          supportsThinking?: boolean;
-          explicitContextCache?: boolean;
-          contextWindow?: number;
-          costMultiplier?: number;
-          description?: string;
-        }>;
-      };
-      console.log('[Auth:getModels] Response data:', JSON.stringify(data).slice(0, 500));
-      if (data.code !== 0) return { success: false };
-      // Cache server model metadata for use in OpenClaw config sync (supportsImage, etc.)
-      const serverModelsChanged = updateServerModelMetadata(data.data);
-      const serverModelIds = data.data.map(model => model.modelId);
-      const serverModelsMissingFromConfig = !openClawConfigHasServerModels(serverModelIds);
-      // Re-sync so the gateway picks up the correct supportsImage values for server models.
-      // This IPC can run after normal chat completion when the renderer refreshes quota/model
-      // state, so server model updates must not force a hard gateway restart.
-      if (serverModelsChanged || serverModelsMissingFromConfig) {
-        console.log(
-          `[Auth:getModels] scheduling OpenClaw config sync for ${serverModelIds.length} server model(s); metadataChanged=${serverModelsChanged} missingFromConfig=${serverModelsMissingFromConfig}`,
-        );
-        syncOpenClawConfig({
-          reason: serverModelsChanged ? 'server-models-updated' : 'server-models-restored',
-          restartGatewayIfRunning: false,
-        }).catch((error) => {
-          console.warn('[Auth:getModels] failed to sync OpenClaw config after loading server models:', error);
-        });
-      } else {
-        console.debug('[Auth:getModels] server model metadata unchanged, skipping config sync');
-      }
-      return { success: true, models: data.data };
+      const models = await loadAvailableServerModels({
+        reason: 'server-models-updated',
+      });
+      return { success: true, models };
     } catch (e) {
       console.error('[Auth:getModels] Error:', e);
       return { success: false };
@@ -6826,6 +7052,15 @@ if (!gotTheLock) {
           `Image attachments ${options.imageAttachments?.length ?? 0}.`,
           `Agent ${options.agentId || 'main'}.`,
         );
+        const modelRunGate = await ensureServerModelReadyForRun(
+          resolveCoworkRunModelRef({
+            modelOverride: options.modelOverride,
+            agentId: options.agentId,
+          }),
+        );
+        if (modelRunGate.allowed === false) {
+          return { success: false, error: modelRunGate.error };
+        }
         const engineStatus = await ensureOpenClawRunningForCowork();
         if (engineStatus.phase !== 'running') {
           return getEngineNotReadyResponse(engineStatus);
@@ -7036,6 +7271,12 @@ if (!gotTheLock) {
           `Prompt length ${options.prompt.length}.`,
           `Image attachments ${options.imageAttachments?.length ?? 0}.`,
         );
+        const modelRunGate = await ensureServerModelReadyForRun(
+          resolveCoworkRunModelRef({ sessionId: options.sessionId }),
+        );
+        if (modelRunGate.allowed === false) {
+          return { success: false, error: modelRunGate.error };
+        }
         const engineStatus = await ensureOpenClawRunningForCowork();
         if (engineStatus.phase !== 'running') {
           return getEngineNotReadyResponse(engineStatus);
@@ -11447,6 +11688,7 @@ if (!gotTheLock) {
         getAuthTokens,
         refreshToken: refreshOnce,
         getServerBaseUrl: getServerApiBaseUrl,
+        getClientVersion: () => app.getVersion(),
       });
       console.log('[Main] OpenClaw token proxy started');
     } catch (err) {
@@ -11578,6 +11820,7 @@ if (!gotTheLock) {
         fetchWithAuth,
         appendKeyfromQuery,
         cachedSubscriptionStatus,
+        clientVersion: app.getVersion(),
         t,
       });
       cachedSubscriptionStatus = warmupResult.subscriptionStatus;

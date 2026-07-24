@@ -226,6 +226,50 @@ test('leaves non-Gemini package model request bodies unchanged', () => {
   expect(testUtils.hydrateGeminiChatCompletionsBody(requestBody)).toBe(requestBody);
 });
 
+test('keeps Kimi K3 package payloads byte-for-byte transparent', () => {
+  const requestBody = Buffer.from(JSON.stringify({
+    model: 'kimi-k3-YoudaoInner',
+    reasoning_effort: 'max',
+    messages: [
+      {
+        role: 'assistant',
+        reasoning_content: 'private reasoning replay',
+        tool_calls: [{
+          id: 'call_1',
+          type: 'function',
+          function: { name: 'read', arguments: '{"path":"README.md"}' },
+        }],
+      },
+      {
+        role: 'tool',
+        tool_call_id: 'call_1',
+        content: 'result',
+      },
+    ],
+  }));
+
+  expect(testUtils.hydrateGeminiChatCompletionsBody(requestBody)).toBe(requestBody);
+});
+
+test('adds fixed capability and client version headers without trusting incoming values', () => {
+  expect(testUtils.buildUpstreamRequestHeaders(
+    'access-token',
+    {
+      accept: 'text/event-stream',
+      'content-type': 'application/json',
+      'x-lobsterai-client-capabilities': 'attacker-controlled',
+      'x-lobsterai-client-version': '0.0.0',
+    },
+    '2026.7.23',
+  )).toEqual({
+    Authorization: 'Bearer access-token',
+    Accept: 'text/event-stream',
+    'Content-Type': 'application/json',
+    'X-LobsterAI-Client-Capabilities': 'kimi-k3-agentic-v1',
+    'X-LobsterAI-Client-Version': '2026.7.23',
+  });
+});
+
 test('classifies SSE packets as terminal only on [DONE], finish_reason, or error payloads', () => {
   const terminalPackets = [
     'data: [DONE]',

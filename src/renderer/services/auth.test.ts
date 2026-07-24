@@ -3,6 +3,7 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 
 import {
   authService,
+  mapAvailableServerModelsToModels,
   mapPricingCatalogTextModelsToServerModels,
   mapPricingCatalogToPublicServerModels,
 } from './auth';
@@ -67,6 +68,42 @@ describe('pricing catalog model mapping', () => {
 
     expect(models.map(model => model.id)).toEqual(['MiniMax-M3']);
     expect(models[0].accessible).toBe(false);
+  });
+});
+
+describe('authenticated server model mapping', () => {
+  test('preserves K3 runtime, modality, token, and agentic metadata', () => {
+    const [model] = mapAvailableServerModelsToModels([{
+      modelId: 'kimi-k3-YoudaoInner',
+      modelName: 'Kimi K3',
+      provider: 'moonshot',
+      apiFormat: 'openai',
+      runtimeProfile: 'moonshot-kimi-k3',
+      supportsImage: true,
+      supportsVideo: true,
+      supportsThinking: true,
+      supportsToolCalling: true,
+      agenticReady: false,
+      contextWindow: 1_048_576,
+      maxTokens: 8_192,
+      accessible: true,
+    }]);
+
+    expect(model).toMatchObject({
+      id: 'kimi-k3-YoudaoInner',
+      providerKey: ProviderName.LobsteraiServer,
+      isServerModel: true,
+      serverApiFormat: 'openai',
+      runtimeProfile: 'moonshot-kimi-k3',
+      supportsImage: true,
+      supportsVideo: true,
+      supportsThinking: true,
+      supportsToolCalling: true,
+      agenticReady: false,
+      contextWindow: 1_048_576,
+      maxTokens: 8_192,
+      accessible: true,
+    });
   });
 });
 
