@@ -1719,9 +1719,14 @@ interface IElectronAPI {
         modelName: string;
         provider: string;
         apiFormat: string;
+        runtimeProfile?: import('../../shared/providers/modelRuntimeProfiles').ModelRuntimeProfile;
         supportsImage?: boolean;
+        supportsVideo?: boolean;
         supportsThinking?: boolean;
+        supportsToolCalling?: boolean;
+        agenticReady?: boolean;
         contextWindow?: number;
+        maxTokens?: number;
         explicitContextCache?: boolean;
         costMultiplier?: number;
         description?: string;

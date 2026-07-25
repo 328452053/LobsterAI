@@ -15,8 +15,21 @@ import {
   TaskCompletionNotificationMode,
 } from '../../shared/notifications/constants';
 import { OpenClawEnginePhase, OpenClawGatewayRepairErrorCode } from '../../shared/openclawEngine/constants';
-import { ProviderAuthType, ProviderName, ProviderRegistry, resolveCodingPlanBaseUrl } from '../../shared/providers';
-import { type AppConfig, defaultConfig, FontPreferences, getProviderDisplayName, getVisibleProviders, normalizeFontPreference, ShortcutAction, type ShortcutConfig } from '../config';
+import {
+  applyModelRuntimeProfileMetadata,
+  findKimiK3ReservedCustomParamKeys,
+  isOfficialMoonshotChatCompletionsUrl,
+  ModelCompatibilityMode,
+  type ModelCompatibilityMode as ModelCompatibilityModeType,
+  ModelRuntimeProfileSource,
+  OpenClawApi,
+  ProviderAuthType,
+  ProviderName,
+  ProviderRegistry,
+  resolveCodingPlanBaseUrl,
+  resolveModelRuntimeProfile,
+} from '../../shared/providers';
+import { type AppConfig, defaultConfig, FontPreferences, getProviderDisplayName, getVisibleProviders, isCustomProvider, normalizeFontPreference, ShortcutAction, type ShortcutConfig } from '../config';
 import { APP_ID, EXPORT_FORMAT_TYPE, EXPORT_PASSWORD } from '../constants/app';
 import { useSkin } from '../providers/SkinProvider';
 import { apiService } from '../services/api';
@@ -60,6 +73,7 @@ import PluginsSettings, { type PluginPendingChanges, type PluginsSettingsHandle 
 import BrowserWebAccessSettings from './settings/BrowserWebAccessSettings';
 import {
   buildOpenAICompatibleChatCompletionsUrl,
+  buildOpenAIConnectionTestRequestBody,
   buildOpenAIResponsesUrl,
   CONNECTIVITY_TEST_TOKEN_BUDGET,
   CUSTOM_PROVIDER_KEYS,
@@ -68,6 +82,7 @@ import {
   getEffectiveApiFormat,
   getOpenClawProviderIdForConfig,
   getProviderDefaultBaseUrl,
+  hasEquivalentProviderModelId,
   hasProviderAuthConfigured,
   type Model,
   type ProviderConfig,
@@ -78,8 +93,8 @@ import {
   resolveBaseUrl,
   resolveModelSupportsImageForProvider,
   shouldAutoSwitchProviderBaseUrl,
-  shouldUseMaxCompletionTokensForOpenAI,
   shouldUseOpenAIResponsesForProvider,
+  supportsKimiK3Compatibility,
 } from './settings/modelProviderUtils';
 import ModelSettingsSection, { DeleteProviderConfirmDialog, ModelEditorDialog } from './settings/ModelSettingsSection';
 import EmailSkillConfig from './skills/EmailSkillConfig';
@@ -280,12 +295,15 @@ const sortAnalyticsObject = (value: unknown): unknown => {
 
 const serializeProviderModelsForAnalyticsDiff = (providerConfig?: ProviderConfig): string => (
   JSON.stringify((providerConfig?.models ?? []).map(model => ({
+    compatibilityMode: model.compatibilityMode,
     contextWindow: model.contextWindow,
     customParams: sortAnalyticsObject(model.customParams),
     id: model.id,
+    maxTokens: model.maxTokens,
     name: model.name,
     supportsImage: model.supportsImage === true,
     supportsThinking: model.supportsThinking === true,
+    supportsVideo: model.supportsVideo === true,
   })))
 );
 
@@ -1514,6 +1532,8 @@ const Settings: React.FC<SettingsProps> = ({
   const [newModelSupportsThinking, setNewModelSupportsThinking] = useState(false);
   const [newModelContextWindow, setNewModelContextWindow] = useState<number | undefined>(undefined);
   const [newModelCustomParams, setNewModelCustomParams] = useState<string>('');
+  const [newModelCompatibilityMode, setNewModelCompatibilityMode] =
+    useState<ModelCompatibilityModeType>(ModelCompatibilityMode.Auto);
   const [modelFormError, setModelFormError] = useState<string | null>(null);
 
   // About tab
@@ -2327,6 +2347,10 @@ const Settings: React.FC<SettingsProps> = ({
     setNewModelName('');
     setNewModelId('');
     setNewModelSupportsImage(false);
+    setNewModelSupportsThinking(false);
+    setNewModelContextWindow(undefined);
+    setNewModelCustomParams('');
+    setNewModelCompatibilityMode(ModelCompatibilityMode.Auto);
     setModelFormError(null);
   };
 
@@ -3749,10 +3773,27 @@ const Settings: React.FC<SettingsProps> = ({
     setNewModelSupportsThinking(false);
     setNewModelContextWindow(undefined);
     setNewModelCustomParams('');
+    setNewModelCompatibilityMode(
+      activeProvider === ProviderName.Moonshot
+        && (
+          providers[activeProvider].codingPlanEnabled
+          || !isOfficialMoonshotChatCompletionsUrl(providers[activeProvider].baseUrl)
+        )
+        ? ModelCompatibilityMode.Standard
+        : ModelCompatibilityMode.Auto,
+    );
     setModelFormError(null);
   };
 
-  const handleEditModel = (modelId: string, modelName: string, supportsImage?: boolean, supportsThinking?: boolean, contextWindow?: number, customParams?: Record<string, unknown>) => {
+  const handleEditModel = (
+    modelId: string,
+    modelName: string,
+    supportsImage?: boolean,
+    supportsThinking?: boolean,
+    contextWindow?: number,
+    customParams?: Record<string, unknown>,
+    compatibilityMode?: ModelCompatibilityModeType,
+  ) => {
     setIsAddingModel(false);
     setIsEditingModel(true);
     setEditingModelId(modelId);
@@ -3765,6 +3806,20 @@ const Settings: React.FC<SettingsProps> = ({
       customParams && Object.keys(customParams).length > 0
         ? JSON.stringify(customParams, null, 2)
         : '',
+    );
+    const isCustomMoonshotRoute = activeProvider === ProviderName.Moonshot
+      && (
+        providers[activeProvider].codingPlanEnabled
+        || !isOfficialMoonshotChatCompletionsUrl(providers[activeProvider].baseUrl)
+      );
+    setNewModelCompatibilityMode(
+      isCustomMoonshotRoute
+        ? (
+          compatibilityMode === ModelCompatibilityMode.MoonshotKimiK3
+            ? ModelCompatibilityMode.MoonshotKimiK3
+            : ModelCompatibilityMode.Standard
+        )
+        : compatibilityMode ?? ModelCompatibilityMode.Auto,
     );
     setModelFormError(null);
   };
@@ -3808,10 +3863,12 @@ const Settings: React.FC<SettingsProps> = ({
       : newModelName.trim();
 
     const currentModels = providers[activeProvider].models ?? [];
-    const duplicateModel = currentModels.find(
-      model => model.id === modelId && (!isEditingModel || model.id !== editingModelId)
+    const hasDuplicateModel = hasEquivalentProviderModelId(
+      currentModels,
+      modelId,
+      isEditingModel ? editingModelId : null,
     );
-    if (duplicateModel) {
+    if (hasDuplicateModel) {
       setModelFormError(i18nService.t('modelIdExists'));
       return;
     }
@@ -3832,20 +3889,91 @@ const Settings: React.FC<SettingsProps> = ({
       }
     }
 
-    const nextModel = {
-      id: modelId,
-      name: modelName,
+    const providerConfig = providers[activeProvider];
+    const effectiveApiFormat = getEffectiveApiFormat(
+      activeProvider,
+      providerConfig.apiFormat,
+    );
+    if (
+      newModelCompatibilityMode === ModelCompatibilityMode.MoonshotKimiK3
+      && !supportsKimiK3Compatibility(activeProvider, providerConfig.apiFormat)
+    ) {
+      setModelFormError(i18nService.t('modelCompatibilityKimiK3RequiresOpenAI'));
+      return;
+    }
+    const runtimeProfile = resolveModelRuntimeProfile({
+      source: isCustomProvider(activeProvider)
+        ? ModelRuntimeProfileSource.Custom
+        : ModelRuntimeProfileSource.BuiltIn,
+      providerId: activeProvider,
+      modelId,
+      api: effectiveApiFormat === 'openai'
+        ? OpenClawApi.OpenAICompletions
+        : OpenClawApi.AnthropicMessages,
+      baseUrl: providerConfig.baseUrl,
+      codingPlanEnabled: providerConfig.codingPlanEnabled,
+      compatibilityMode: newModelCompatibilityMode,
+    });
+    const conflictingCustomParamKeys = runtimeProfile
+      ? findKimiK3ReservedCustomParamKeys(parsedCustomParams)
+      : [];
+    if (conflictingCustomParamKeys.length > 0) {
+      setModelFormError(
+        i18nService.t('kimiK3CustomParamsConflict').replace(
+          '{keys}',
+          conflictingCustomParamKeys.join(', '),
+        ),
+      );
+      return;
+    }
+
+    const compatibilityModeToPersist = activeProvider === ProviderName.Moonshot
+      && !providerConfig.codingPlanEnabled
+      && isOfficialMoonshotChatCompletionsUrl(providerConfig.baseUrl)
+      && runtimeProfile
+      ? ModelCompatibilityMode.Auto
+      : newModelCompatibilityMode;
+    const editingModel = currentModels.find(model => model.id === editingModelId);
+    const resolvedProfileMetadata = applyModelRuntimeProfileMetadata({
       supportsImage: ProviderRegistry.resolveModelSupportsImage(
         activeProvider,
         modelId,
         newModelSupportsImage,
       ),
-      ...(ProviderRegistry.resolveModelSupportsThinking(
+      supportsVideo: ProviderRegistry.resolveModelSupportsVideo(
+        activeProvider,
+        modelId,
+        editingModel?.supportsVideo,
+      ),
+      supportsThinking: ProviderRegistry.resolveModelSupportsThinking(
         activeProvider,
         modelId,
         newModelSupportsThinking,
-      ) ? { supportsThinking: true } : {}),
-      ...(newModelContextWindow !== undefined ? { contextWindow: newModelContextWindow } : {}),
+      ),
+      contextWindow: newModelContextWindow,
+      maxTokens: ProviderRegistry.resolveModelMaxTokens(
+        activeProvider,
+        modelId,
+        editingModel?.maxTokens,
+      ),
+    }, runtimeProfile);
+    const nextModel = {
+      id: modelId,
+      name: modelName,
+      supportsImage: resolvedProfileMetadata.supportsImage ?? false,
+      ...(resolvedProfileMetadata.supportsThinking ? { supportsThinking: true } : {}),
+      ...(resolvedProfileMetadata.contextWindow !== undefined
+        ? { contextWindow: resolvedProfileMetadata.contextWindow }
+        : {}),
+      ...(resolvedProfileMetadata.supportsVideo ? { supportsVideo: true } : {}),
+      ...(resolvedProfileMetadata.maxTokens !== undefined
+        ? { maxTokens: resolvedProfileMetadata.maxTokens }
+        : {}),
+      ...(
+        isCustomProvider(activeProvider) || activeProvider === ProviderName.Moonshot
+          ? { compatibilityMode: compatibilityModeToPersist }
+          : {}
+      ),
       ...(parsedCustomParams && Object.keys(parsedCustomParams).length > 0
         ? { customParams: parsedCustomParams }
         : {}),
@@ -3869,7 +3997,9 @@ const Settings: React.FC<SettingsProps> = ({
     setNewModelId('');
     setNewModelSupportsImage(false);
     setNewModelSupportsThinking(false);
+    setNewModelContextWindow(undefined);
     setNewModelCustomParams('');
+    setNewModelCompatibilityMode(ModelCompatibilityMode.Auto);
     setModelFormError(null);
   };
 
@@ -3883,6 +4013,7 @@ const Settings: React.FC<SettingsProps> = ({
     setNewModelSupportsThinking(false);
     setNewModelContextWindow(undefined);
     setNewModelCustomParams('');
+    setNewModelCompatibilityMode(ModelCompatibilityMode.Auto);
     setModelFormError(null);
   };
 
@@ -4041,23 +4172,13 @@ const Settings: React.FC<SettingsProps> = ({
           headers['User-Agent'] = 'GitHubCopilotChat/0.26.7';
           headers['Openai-Intent'] = 'conversation-panel';
         }
-        const openAIRequestBody: Record<string, unknown> = useResponsesApi
-          ? {
-              model: firstModel.id,
-              input: [{ role: 'user', content: [{ type: 'input_text', text: 'Hi' }] }],
-              max_output_tokens: CONNECTIVITY_TEST_TOKEN_BUDGET,
-            }
-          : {
-              model: firstModel.id,
-              messages: [{ role: 'user', content: 'Hi' }],
-            };
-        if (!useResponsesApi && shouldUseMaxCompletionTokensForOpenAI(testingProvider, firstModel.id)) {
-          openAIRequestBody.max_completion_tokens = CONNECTIVITY_TEST_TOKEN_BUDGET;
-        } else {
-          if (!useResponsesApi) {
-            openAIRequestBody.max_tokens = CONNECTIVITY_TEST_TOKEN_BUDGET;
-          }
-        }
+        const openAIRequestBody = buildOpenAIConnectionTestRequestBody({
+          provider: testingProvider,
+          providerConfig,
+          model: firstModel,
+          effectiveBaseUrl,
+          useResponsesApi,
+        });
         response = await window.electron.api.fetch({
           url: openaiUrl,
           method: 'POST',
@@ -5910,6 +6031,9 @@ const Settings: React.FC<SettingsProps> = ({
           setNewModelContextWindow={setNewModelContextWindow}
           newModelCustomParams={newModelCustomParams}
           setNewModelCustomParams={setNewModelCustomParams}
+          newModelCompatibilityMode={newModelCompatibilityMode}
+          setNewModelCompatibilityMode={setNewModelCompatibilityMode}
+          activeProviderConfig={providers[activeProvider]}
           modelFormError={modelFormError}
           setModelFormError={setModelFormError}
           handleSaveNewModel={handleSaveNewModel}

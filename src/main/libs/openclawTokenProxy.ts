@@ -8,6 +8,11 @@ import {
   type AuthRefreshReason as AuthRefreshReasonValue,
   type AuthTokenRefreshResult,
 } from '../../shared/auth/constants';
+import {
+  KIMI_K3_AGENTIC_CAPABILITY,
+  LOBSTERAI_CLIENT_CAPABILITIES_HEADER,
+  LOBSTERAI_CLIENT_VERSION_HEADER,
+} from '../../shared/providers/modelRuntimeProfiles';
 
 const PROXY_BIND_HOST = '127.0.0.1';
 const RECENT_QUOTA_ERROR_TTL_MS = 30_000;
@@ -23,11 +28,13 @@ let tokenRefresher: (
   (reason: AuthRefreshReasonValue) => Promise<AuthTokenRefreshResult>
 ) | null = null;
 let serverBaseUrlGetter: (() => string) | null = null;
+let clientVersionGetter: (() => string) | null = null;
 
 export type OpenClawTokenProxyConfig = {
   getAuthTokens: () => { accessToken: string; refreshToken: string } | null;
   refreshToken: (reason: AuthRefreshReasonValue) => Promise<AuthTokenRefreshResult>;
   getServerBaseUrl: () => string;
+  getClientVersion: () => string;
 };
 
 type OpenClawTokenProxyQuotaError = {
@@ -40,6 +47,7 @@ export function startOpenClawTokenProxy(config: OpenClawTokenProxyConfig): Promi
   tokenGetter = config.getAuthTokens;
   tokenRefresher = config.refreshToken;
   serverBaseUrlGetter = config.getServerBaseUrl;
+  clientVersionGetter = config.getClientVersion;
 
   return new Promise((resolve, reject) => {
     if (proxyServer) {
@@ -79,6 +87,7 @@ export function stopOpenClawTokenProxy(): void {
     proxyServer = null;
     proxyPort = null;
     recentQuotaError = null;
+    clientVersionGetter = null;
     console.log('[OpenClawTokenProxy] stopped');
   }
 }
@@ -153,7 +162,15 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     const upstreamPath = `/api/proxy${req.url || '/'}`;
     const upstreamUrl = `${serverBaseUrl}${upstreamPath}`;
 
-    let result = await forwardRequest(upstreamUrl, req.method || 'POST', tokens.accessToken, upstreamBody, req.headers);
+    const clientVersion = clientVersionGetter?.() ?? '';
+    let result = await forwardRequest(
+      upstreamUrl,
+      req.method || 'POST',
+      tokens.accessToken,
+      upstreamBody,
+      req.headers,
+      clientVersion,
+    );
 
     if (shouldRefreshLobsterAIToken(result.status) && tokenRefresher) {
       const latestAccessToken = tokenGetter?.()?.accessToken;
@@ -164,6 +181,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
           latestAccessToken,
           upstreamBody,
           req.headers,
+          clientVersion,
         );
         if (result.status !== 401) {
           pipeResponse(result, res);
@@ -180,6 +198,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
           refreshResult.accessToken,
           upstreamBody,
           req.headers,
+          clientVersion,
         );
         pipeResponse(retryResult, res);
         return;
@@ -606,16 +625,13 @@ async function forwardRequest(
   accessToken: string,
   body: Buffer,
   incomingHeaders: http.IncomingHttpHeaders,
+  clientVersion: string,
 ): Promise<UpstreamResult> {
-  const headers: Record<string, string> = {
-    'Authorization': `Bearer ${accessToken}`,
-    'Content-Type': incomingHeaders['content-type'] || 'application/json',
-  };
-
-  // Forward accept header for SSE streaming
-  if (incomingHeaders.accept) {
-    headers['Accept'] = incomingHeaders.accept;
-  }
+  const headers = buildUpstreamRequestHeaders(
+    accessToken,
+    incomingHeaders,
+    clientVersion,
+  );
 
   const resp = await net.fetch(url, {
     method,
@@ -647,6 +663,26 @@ async function forwardRequest(
     body: respBuffer,
     isStream: false,
   };
+}
+
+function buildUpstreamRequestHeaders(
+  accessToken: string,
+  incomingHeaders: http.IncomingHttpHeaders,
+  clientVersion: string,
+): Record<string, string> {
+  const headers: Record<string, string> = {
+    'Authorization': `Bearer ${accessToken}`,
+    'Content-Type': incomingHeaders['content-type'] || 'application/json',
+    [LOBSTERAI_CLIENT_CAPABILITIES_HEADER]: KIMI_K3_AGENTIC_CAPABILITY,
+    [LOBSTERAI_CLIENT_VERSION_HEADER]: clientVersion,
+  };
+
+  // Forward accept header for SSE streaming
+  if (incomingHeaders.accept) {
+    headers['Accept'] = incomingHeaders.accept;
+  }
+
+  return headers;
 }
 
 function pipeResponse(result: UpstreamResult, res: http.ServerResponse): void {
@@ -866,6 +902,7 @@ export const __openClawTokenProxyTestUtils = {
   extractQuotaErrorFromProxySSEPacket,
   hydrateGeminiChatCompletionsBody,
   hydrateGeminiToolCallThoughtSignatures,
+  buildUpstreamRequestHeaders,
   scanProxySSEBufferForQuotaError,
   flushProxySSEBufferForQuotaError,
   rememberQuotaError,

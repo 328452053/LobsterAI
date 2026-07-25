@@ -10,8 +10,9 @@
  * Usage:
  *   node scripts/apply-openclaw-patches.cjs [openclaw-src-dir]
  *
- * If openclaw-src-dir is not specified, defaults to ../openclaw relative to
- * the LobsterAI project root.
+ * If openclaw-src-dir is not specified, OPENCLAW_SRC is used when present,
+ * otherwise the source defaults to ../openclaw relative to the LobsterAI
+ * project root.
  *
  * Safe to run multiple times — already-applied patches are skipped.
  */
@@ -24,7 +25,9 @@ const path = require('path');
 const rootDir = path.resolve(__dirname, '..');
 const openclawSrc = process.argv[2]
   ? path.resolve(process.argv[2])
-  : path.resolve(rootDir, '..', 'openclaw');
+  : process.env.OPENCLAW_SRC
+    ? path.resolve(process.env.OPENCLAW_SRC)
+    : path.resolve(rootDir, '..', 'openclaw');
 
 // Read pinned openclaw version from package.json.
 const pkg = require(path.join(rootDir, 'package.json'));
@@ -119,6 +122,124 @@ const strongPatchValidators = {
         'does not request another model turn after a tool aborts the run',
         'does not request another model turn when an async turn hook aborts the run',
         'expect(streamCalls).toBe(1)',
+      ],
+    },
+  ],
+  'openclaw-kimi-k3-support.patch': [
+    {
+      file: 'src/llm/providers/stream-wrappers/moonshot-thinking.ts',
+      snippets: [
+        'ensureMoonshotToolCallReasoningContent',
+        'export function createMoonshotKimiK3Wrapper',
+        'payload.reasoning_effort = "max"',
+      ],
+    },
+    {
+      file: 'src/config/zod-schema.core.ts',
+      snippets: [
+        'thinkingLevelMap: ThinkingLevelMapSchema',
+      ],
+    },
+    {
+      file: 'src/agents/sessions/model-registry.ts',
+      snippets: [
+        'Type.Literal("video")',
+        'Type.Literal("audio")',
+      ],
+    },
+    {
+      file: 'src/config/zod-schema.models.test.ts',
+      snippets: [
+        'rejects an invalid thinking-level map: $label',
+      ],
+    },
+    {
+      file: 'src/plugin-sdk/provider-stream.test.ts',
+      snippets: [
+        'reapplies the K3 payload contract after an async caller replacement',
+        'expect(callerSawReasoningContent).toBe("")',
+      ],
+    },
+  ],
+  'openclaw-lobsterai-model-compat-api.patch': [
+    {
+      file: 'src/config/types.models.ts',
+      snippets: [
+        'LOBSTERAI_MODEL_COMPAT_API = "lobsterai-model-compat"',
+        'export const MODEL_TRANSPORT_APIS',
+        'api?: ModelTransportApi',
+      ],
+    },
+    {
+      file: 'src/config/zod-schema.core.ts',
+      snippets: [
+        'const ModelTransportApiSchema = z.enum(MODEL_TRANSPORT_APIS)',
+        'api: ModelTransportApiSchema.optional()',
+      ],
+    },
+    {
+      file: 'src/agents/embedded-agent-runner/model.inline-provider.test.ts',
+      snippets: [
+        'keeps a provider API owner out of model transport resolution',
+        'api: "lobsterai-model-compat"',
+      ],
+    },
+    {
+      file: 'src/config/zod-schema.model-api-owner.test.ts',
+      snippets: [
+        'rejects arbitrary provider API owner strings',
+        'rejects recursive model-level compatibility ownership',
+      ],
+    },
+  ],
+  'openclaw-openai-compatible-replay-errors.patch': [
+    {
+      file: 'src/llm/utils/provider-error.ts',
+      snippets: [
+        'export function formatProviderError',
+        'const MAX_ERROR_BODY_LENGTH = 4000',
+      ],
+    },
+    {
+      file: 'src/llm/providers/transform-messages.null-content.test.ts',
+      snippets: [
+        'normalizes null or missing content before provider transforms',
+      ],
+    },
+    {
+      file: 'src/llm/providers/openai-completions.test.ts',
+      snippets: [
+        'surfaces HTTP response body text from OpenAI-compatible errors',
+      ],
+    },
+  ],
+  'openclaw-repeated-tool-call-id.patch': [
+    {
+      file: 'src/agents/session-transcript-repair.ts',
+      snippets: [
+        'type ToolCallOccurrence = {',
+        'function buildToolUseFrames',
+        'Provider ids are opaque and can legitimately repeat',
+      ],
+    },
+    {
+      file: 'src/agents/embedded-agent-runner/replay-history.ts',
+      snippets: [
+        'sanitizeToolCallIds: false',
+        'const pairedToolCalls =',
+      ],
+    },
+    {
+      file: 'src/agents/embedded-agent-runner/run/attempt.tool-call-normalization.test.ts',
+      snippets: [
+        'pairs repeated raw ids before assigning provider-safe occurrence ids',
+        'keeps same-turn repeated calls and results aligned after id rewriting',
+      ],
+    },
+    {
+      file: 'src/agents/transport-message-transform.test.ts',
+      snippets: [
+        "does not reassign a dropped errored turn's repeated-id result to an older turn",
       ],
     },
   ],

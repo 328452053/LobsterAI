@@ -35,6 +35,7 @@ import {
   buildOpenClawRuntimeErrorDetail,
   ensurePlanModeProposedPlanBlock,
   estimateOpenClawChatSendFrameBytes,
+  isIncompleteStopReason,
   isPlanModeResponseComplete,
   isPlanModeSafeExecCommand,
   isSignificantAssistantStreamReset,
@@ -247,6 +248,361 @@ test('normalizeOpenClawRuntimeErrorMessage maps empty SSE parser errors', () => 
 
 test('normalizeOpenClawRuntimeErrorMessage keeps unrelated errors unchanged', () => {
   expect(normalizeOpenClawRuntimeErrorMessage('upstream 502')).toBe('upstream 502');
+});
+
+test('length is the only incomplete gateway stop reason', () => {
+  expect(isIncompleteStopReason('length')).toBe(true);
+  expect(isIncompleteStopReason('stop')).toBe(false);
+  expect(isIncompleteStopReason('toolUse')).toBe(false);
+  expect(isIncompleteStopReason(undefined)).toBe(false);
+});
+
+test('length final preserves partial output and tool results without completing the task', async () => {
+  const { session, store } = createReconcileStore([
+    { id: 'msg-1', type: 'user', content: 'finish the implementation', timestamp: 1, metadata: {} },
+    {
+      id: 'msg-2',
+      type: 'tool_use',
+      content: 'Using write',
+      timestamp: 2,
+      metadata: { toolUseId: 'call-1', toolName: 'write' },
+    },
+    {
+      id: 'msg-3',
+      type: 'tool_result',
+      content: 'Wrote app.ts',
+      timestamp: 3,
+      metadata: { toolUseId: 'call-1', toolName: 'write' },
+    },
+  ]);
+  session.status = 'running';
+  const adapter = new OpenClawRuntimeAdapter(store, {});
+  const historyRequest = vi.fn(async () => {
+    throw new Error('history unavailable');
+  });
+  adapter.gatewayClient = {
+    start: () => {},
+    stop: () => {},
+    request: historyRequest,
+  };
+  const sessionKey = `agent:main:lobsterai:${session.id}`;
+  const turn = createActiveTurn(session.id, sessionKey, 'run-length');
+  const completeSpy = vi.fn();
+  const errorSpy = vi.fn();
+  adapter.on('complete', completeSpy);
+  adapter.on('error', errorSpy);
+  adapter.activeTurns.set(session.id, turn);
+
+  await adapter.handleChatFinal(session.id, turn, {
+    state: 'final',
+    runId: 'run-length',
+    sessionKey,
+    message: {
+      role: 'assistant',
+      content: 'I updated the implementation, but the remaining verification',
+      stopReason: 'length',
+    },
+  });
+
+  expect(session.status).toBe('error');
+  expect(completeSpy).not.toHaveBeenCalled();
+  expect(errorSpy).toHaveBeenCalledTimes(1);
+  expect(adapter.activeTurns.has(session.id)).toBe(false);
+  expect(session.messages.some((message) => message.type === 'tool_result')).toBe(true);
+  expect(historyRequest).toHaveBeenCalledWith(
+    'chat.history',
+    { sessionKey, limit: 50 },
+    { timeoutMs: 8_000 },
+  );
+
+  const assistantMessage = session.messages.find((message) => message.type === 'assistant');
+  expect(assistantMessage?.content).toContain('remaining verification');
+  expect(assistantMessage?.metadata).toMatchObject({
+    isStreaming: false,
+    isFinal: true,
+    isTruncated: true,
+    stopReason: 'length',
+  });
+  const systemMessage = session.messages.find((message) => message.type === 'system');
+  expect(systemMessage?.content).toContain('部分结果已保留');
+  expect(systemMessage?.metadata).toMatchObject({
+    isFinal: true,
+    isIncomplete: true,
+    isTruncated: true,
+    stopReason: 'length',
+  });
+});
+
+test('length final marks a thinking-only partial response as truncated', async () => {
+  const { session, store } = createReconcileStore([
+    { id: 'msg-1', type: 'user', content: 'analyze this task', timestamp: 1, metadata: {} },
+  ]);
+  session.status = 'running';
+  const adapter = new OpenClawRuntimeAdapter(store, {});
+  const sessionKey = `agent:main:lobsterai:${session.id}`;
+  const turn = createActiveTurn(session.id, sessionKey, 'run-thinking-length');
+  adapter.on('error', vi.fn());
+  adapter.activeTurns.set(session.id, turn);
+  adapter.sessionIdByRunId.set('run-thinking-length', session.id);
+
+  adapter.handleAgentEvent({
+    runId: 'run-thinking-length',
+    sessionKey,
+    stream: 'thinking',
+    data: { text: 'Partial reasoning that reached the output limit.' },
+  }, 1);
+
+  await adapter.handleChatFinal(session.id, turn, {
+    state: 'final',
+    runId: 'run-thinking-length',
+    sessionKey,
+    message: {
+      role: 'assistant',
+      content: [],
+      stopReason: 'length',
+    },
+  });
+
+  const thinkingMessage = session.messages.find(
+    (message) => message.type === 'assistant' && message.metadata?.isThinking === true,
+  );
+  expect(thinkingMessage?.content).toContain('Partial reasoning');
+  expect(thinkingMessage?.metadata).toMatchObject({
+    isThinking: true,
+    isStreaming: false,
+    isFinal: true,
+    isTruncated: true,
+    stopReason: 'length',
+  });
+  expect(session.status).toBe('error');
+  expect(adapter.activeTurns.has(session.id)).toBe(false);
+});
+
+test('length final reconciles reasoning and tool work present only in gateway history', async () => {
+  const partialText = 'The verification reached the output limit.';
+  const { session, store } = createReconcileStore([
+    { id: 'msg-1', type: 'user', content: 'finish and verify the task', timestamp: 1, metadata: {} },
+    {
+      id: 'msg-2',
+      type: 'assistant',
+      content: partialText,
+      timestamp: 2,
+      metadata: { isStreaming: true, isFinal: false },
+    },
+  ]);
+  session.status = 'running';
+  const adapter = new OpenClawRuntimeAdapter(store, {});
+  const sessionKey = `agent:main:lobsterai:${session.id}`;
+  const historyRequest = vi.fn(async () => ({
+    messages: [
+      { role: 'user', content: 'finish and verify the task' },
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'thinking',
+            thinking: 'The final verification needs a delegated status check.',
+          },
+          {
+            type: 'toolCall',
+            id: 'call-yield',
+            name: 'sessions_yield',
+            arguments: { message: 'wait for verification' },
+          },
+        ],
+      },
+      {
+        role: 'toolResult',
+        toolCallId: 'call-yield',
+        toolName: 'sessions_yield',
+        content: '{"status":"yielded"}',
+      },
+      {
+        role: 'assistant',
+        content: partialText,
+        stopReason: 'length',
+      },
+    ],
+  }));
+  adapter.gatewayClient = {
+    start: () => {},
+    stop: () => {},
+    request: historyRequest,
+  };
+  const turn = createActiveTurn(session.id, sessionKey, 'run-history-length');
+  turn.assistantMessageId = 'msg-2';
+  turn.currentText = partialText;
+  turn.currentAssistantSegmentText = partialText;
+  adapter.on('error', vi.fn());
+  adapter.activeTurns.set(session.id, turn);
+  adapter.latestTurnTokenBySession.set(session.id, turn.turnToken);
+
+  await adapter.handleChatFinal(session.id, turn, {
+    state: 'final',
+    runId: 'run-history-length',
+    sessionKey,
+    message: {
+      role: 'assistant',
+      content: partialText,
+      stopReason: 'length',
+    },
+  });
+
+  expect(historyRequest).toHaveBeenCalledWith(
+    'chat.history',
+    { sessionKey, limit: 50 },
+    { timeoutMs: 8_000 },
+  );
+  expect(session.messages).toEqual(expect.arrayContaining([
+    expect.objectContaining({
+      type: 'assistant',
+      content: 'The final verification needs a delegated status check.',
+      metadata: expect.objectContaining({
+        isThinking: true,
+        isStreaming: false,
+        isFinal: true,
+        openclawThinkingAnchorToolCallId: 'call-yield',
+      }),
+    }),
+    expect.objectContaining({
+      type: 'tool_use',
+      metadata: expect.objectContaining({
+        toolName: 'sessions_yield',
+        toolUseId: 'call-yield',
+      }),
+    }),
+    expect.objectContaining({
+      type: 'tool_result',
+      content: '{"status":"yielded"}',
+      metadata: expect.objectContaining({
+        toolUseId: 'call-yield',
+      }),
+    }),
+  ]));
+  expect(session.messages.find((message) => message.id === 'msg-2')).toMatchObject({
+    content: partialText,
+    metadata: {
+      isStreaming: false,
+      isFinal: true,
+      isTruncated: true,
+      stopReason: 'length',
+    },
+  });
+  expect(session.status).toBe('error');
+  expect(adapter.activeTurns.has(session.id)).toBe(false);
+});
+
+test('length final does not synthesize a closing plan tag from truncated gateway history', async () => {
+  const partialPlan = '<proposed_plan>\n## Implementation\n- Finish the first change';
+  const { session, store } = createReconcileStore([
+    { id: 'msg-1', type: 'user', content: 'write a plan', timestamp: 1, metadata: {} },
+  ]);
+  session.status = 'running';
+  const adapter = new OpenClawRuntimeAdapter(store, {});
+  const sessionKey = `agent:main:lobsterai:${session.id}`;
+  adapter.gatewayClient = {
+    start: () => {},
+    stop: () => {},
+    request: vi.fn(async () => ({
+      messages: [
+        { role: 'user', content: 'write a plan' },
+        {
+          role: 'assistant',
+          content: partialPlan,
+          stopReason: 'length',
+        },
+      ],
+    })),
+  };
+  const turn = createActiveTurn(session.id, sessionKey, 'run-plan-length');
+  turn.planMode = true;
+  adapter.on('error', vi.fn());
+  adapter.activeTurns.set(session.id, turn);
+  adapter.latestTurnTokenBySession.set(session.id, turn.turnToken);
+
+  await adapter.handleChatFinal(session.id, turn, {
+    state: 'final',
+    runId: 'run-plan-length',
+    sessionKey,
+    message: {
+      role: 'assistant',
+      content: partialPlan,
+      stopReason: 'length',
+    },
+  });
+
+  const assistantMessage = session.messages.find(message => message.type === 'assistant');
+  expect(assistantMessage?.content).toBe(partialPlan);
+  expect(assistantMessage?.content).not.toContain('</proposed_plan>');
+  expect(assistantMessage?.metadata).toMatchObject({
+    isTruncated: true,
+    stopReason: 'length',
+  });
+});
+
+test('length final does not overwrite an explicit stop while history is pending', async () => {
+  let markHistoryRequested: (() => void) | undefined;
+  const historyRequested = new Promise<void>((resolve) => {
+    markHistoryRequested = resolve;
+  });
+  let resolveHistory: (() => void) | undefined;
+  const historyCanReturn = new Promise<void>((resolve) => {
+    resolveHistory = resolve;
+  });
+  const { session, store } = createReconcileStore([
+    { id: 'msg-1', type: 'user', content: 'continue until stopped', timestamp: 1, metadata: {} },
+  ]);
+  session.status = 'running';
+  const adapter = new OpenClawRuntimeAdapter(store, {});
+  const sessionKey = `agent:main:lobsterai:${session.id}`;
+  adapter.gatewayClient = {
+    start: () => {},
+    stop: () => {},
+    request: vi.fn(async () => {
+      markHistoryRequested?.();
+      await historyCanReturn;
+      return {
+        messages: [
+          { role: 'user', content: 'continue until stopped' },
+          {
+            role: 'assistant',
+            content: 'Partial output from the stopped turn.',
+            stopReason: 'length',
+          },
+        ],
+      };
+    }),
+  };
+  const turn = createActiveTurn(session.id, sessionKey, 'run-stopped-during-length');
+  const errorSpy = vi.fn();
+  adapter.on('error', errorSpy);
+  adapter.activeTurns.set(session.id, turn);
+  adapter.latestTurnTokenBySession.set(session.id, turn.turnToken);
+
+  const finalPromise = adapter.handleChatFinal(session.id, turn, {
+    state: 'final',
+    runId: 'run-stopped-during-length',
+    sessionKey,
+    message: {
+      role: 'assistant',
+      content: 'Partial output from the stopped turn.',
+      stopReason: 'length',
+    },
+  });
+  await historyRequested;
+
+  turn.stopRequested = true;
+  adapter.activeTurns.delete(session.id);
+  session.status = 'stopped';
+  resolveHistory?.();
+  await finalPromise;
+
+  expect(session.status).toBe('stopped');
+  expect(errorSpy).not.toHaveBeenCalled();
+  expect(session.messages.some(message => (
+    message.type === 'system'
+    && message.metadata?.isTruncated === true
+  ))).toBe(false);
 });
 
 test('resolveOpenClawRuntimeErrorMessage restores recent quota error hidden by OpenClaw generic error', () => {
