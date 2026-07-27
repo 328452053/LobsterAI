@@ -2256,13 +2256,19 @@ describe('OpenClawConfigSync runtime config output', () => {
     expect(agentsMd).toContain('For every `browser` tool call, set `target="host"` explicitly.');
   });
 
-  test('enables managed OpenClaw tool loop detection', async () => {
+  test('enables managed OpenClaw run safety and tool loop detection', async () => {
     const sync = await createSync();
 
     const result = sync.sync('tool-loop-detection');
     expect(result.ok).toBe(true);
 
     const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    expect(config.agents.defaults.runSafety).toEqual({
+      maxToolCallReservationsPerBudgetScope: 64,
+      maxProviderDispatchesPerBudgetScope: 32,
+      maxCumulativeEstimatedPromptTokensPerBudgetScope: 2_000_000,
+      warningRatio: 0.75,
+    });
     expect(config.tools.loopDetection).toEqual({
       enabled: true,
       historySize: 40,
@@ -2270,10 +2276,13 @@ describe('OpenClawConfigSync runtime config output', () => {
       unknownToolThreshold: 6,
       criticalThreshold: 10,
       globalCircuitBreakerThreshold: 16,
+      variantWarningThreshold: 2,
+      variantCriticalThreshold: 3,
       detectors: {
         genericRepeat: true,
         knownPollNoProgress: true,
         pingPong: true,
+        variantNoProgress: true,
       },
     });
   });

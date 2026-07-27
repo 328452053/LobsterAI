@@ -1098,6 +1098,9 @@ class CoworkService {
     }
 
     this.logDiagnostic('warn', `stop failed for session ${sessionId}: ${result.error ?? 'Unknown error'}.`);
+    window.dispatchEvent(new CustomEvent('app:showToast', {
+      detail: i18nService.t('coworkStopFailed'),
+    }));
     return false;
   }
 

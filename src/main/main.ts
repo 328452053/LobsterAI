@@ -61,6 +61,7 @@ import {
   CoworkContextUsageSource,
   CoworkForkMode,
   CoworkIpcChannel,
+  CoworkStopStatus,
 } from '../shared/cowork/constants';
 import {
   buildCoworkImageAttachmentPreviews,
@@ -7267,14 +7268,25 @@ if (!gotTheLock) {
     }
   });
 
-  ipcMain.handle('cowork:session:stop', async (_event, sessionId: string) => {
+  ipcMain.handle(CoworkIpcChannel.StopSession, async (_event, sessionId: string) => {
     try {
       const runtime = getCoworkEngineRouter();
-      runtime.stopSession(sessionId);
-      return { success: true };
+      const result = await runtime.abortSessionAndConfirm(sessionId);
+      if (result.status === CoworkStopStatus.Failed) {
+        return {
+          success: false,
+          status: result.status,
+          error: result.error,
+        };
+      }
+      return {
+        success: true,
+        status: result.status,
+      };
     } catch (error) {
       return {
         success: false,
+        status: CoworkStopStatus.Failed,
         error: error instanceof Error ? error.message : 'Failed to stop session',
       };
     }

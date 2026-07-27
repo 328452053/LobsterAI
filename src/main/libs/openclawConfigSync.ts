@@ -234,6 +234,12 @@ const MANAGED_OWNER_ALLOW_FROM = [
 ];
 
 const MANAGED_TOOL_DENY = ['web_search'] as const;
+const MANAGED_RUN_SAFETY = {
+  maxToolCallReservationsPerBudgetScope: 64,
+  maxProviderDispatchesPerBudgetScope: 32,
+  maxCumulativeEstimatedPromptTokensPerBudgetScope: 2_000_000,
+  warningRatio: 0.75,
+} as const;
 const MANAGED_TOOL_LOOP_DETECTION = {
   enabled: true,
   historySize: 40,
@@ -241,10 +247,13 @@ const MANAGED_TOOL_LOOP_DETECTION = {
   unknownToolThreshold: 6,
   criticalThreshold: 10,
   globalCircuitBreakerThreshold: 16,
+  variantWarningThreshold: 2,
+  variantCriticalThreshold: 3,
   detectors: {
     genericRepeat: true,
     knownPollNoProgress: true,
     pingPong: true,
+    variantNoProgress: true,
   },
 } as const;
 const EMAIL_PLUGIN_ID = 'email';
@@ -1621,7 +1630,7 @@ export class OpenClawConfigSync {
       deny: [
         ...MANAGED_TOOL_DENY
       ],
-loopDetection: MANAGED_TOOL_LOOP_DETECTION,
+      loopDetection: MANAGED_TOOL_LOOP_DETECTION,
       web: {
         search: {
           enabled: false,
@@ -1932,6 +1941,7 @@ loopDetection: MANAGED_TOOL_LOOP_DETECTION,
       agents: {
         defaults: {
           timeoutSeconds: OPENCLAW_AGENT_TIMEOUT_SECONDS,
+          runSafety: MANAGED_RUN_SAFETY,
           model: {
             primary: primaryModel,
           },
