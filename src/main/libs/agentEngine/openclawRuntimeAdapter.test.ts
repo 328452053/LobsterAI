@@ -23,6 +23,12 @@ import {
   BrowserAnnotationAnchorKind,
   BrowserAnnotationScreenshotStatus,
 } from '../../../shared/cowork/browserAnnotations';
+import {
+  COWORK_BTW_IDENTIFIER_MAX_CHARS,
+  COWORK_BTW_QUESTION_MAX_CHARS,
+  COWORK_BTW_RESULT_MAX_CHARS,
+  CoworkBtwStatus,
+} from '../../../shared/cowork/btw';
 import { CoworkSelectedTextSource } from '../../../shared/cowork/selectedText';
 import { OpenClawTranscriptSafetyLimit } from '../../../shared/openclawTranscript/constants';
 import {
@@ -2015,6 +2021,8 @@ function createRunTurnAdapter(options: {
   holdFirstModelPatch?: boolean;
   sessionCwd?: string;
   chatSendError?: Error;
+  autoFinalizeChatSend?: boolean;
+  holdChatSend?: boolean;
   stateDir?: string;
 } = {}) {
   const session = {
@@ -2117,23 +2125,36 @@ function createRunTurnAdapter(options: {
         if (options.chatSendError) {
           throw options.chatSendError;
         }
+        if (options.holdChatSend) {
+          return await new Promise<Record<string, unknown>>(() => {});
+        }
         const runId = typeof requestParams.idempotencyKey === 'string'
           ? requestParams.idempotencyKey
           : 'run-1';
         const sessionKey = typeof requestParams.sessionKey === 'string'
           ? requestParams.sessionKey
           : 'agent:main:lobsterai:session-1';
-        queueMicrotask(() => {
-          (adapter as unknown as {
-            handleChatEvent: (payload: unknown, seq?: number) => void;
-          }).handleChatEvent({
-            state: 'final',
-            runId,
-            sessionKey,
-            message: { role: 'assistant', content: 'Done' },
-          }, 1);
-        });
+        if (options.autoFinalizeChatSend !== false) {
+          queueMicrotask(() => {
+            (adapter as unknown as {
+              handleChatEvent: (payload: unknown, seq?: number) => void;
+            }).handleChatEvent({
+              state: 'final',
+              runId,
+              sessionKey,
+              message: { role: 'assistant', content: 'Done' },
+            }, 1);
+          });
+        }
         return { runId };
+      }
+      if (method === 'chat.abort') {
+        const runId = typeof requestParams.runId === 'string' ? requestParams.runId : '';
+        return {
+          ok: true,
+          aborted: Boolean(runId),
+          runIds: runId ? [runId] : [],
+        };
       }
       return {};
     },
@@ -2160,6 +2181,395 @@ function createRunTurnAdapter(options: {
     firstModelPatchStarted,
   };
 }
+
+test('BTW side results and terminal events stay isolated from an active main turn', async () => {
+  const { adapter, requests, session } = createRunTurnAdapter({
+    autoFinalizeChatSend: false,
+  });
+  const sessionKey = 'agent:main:lobsterai:session-1';
+  const activeMainTurn = {
+    runId: 'main-run',
+    sessionKey,
+  };
+  adapter.activeTurns.set('session-1', activeMainTurn as never);
+  const resultListener = vi.fn();
+  const messageListener = vi.fn();
+  const statusListener = vi.fn();
+  adapter.on('btwResult', resultListener);
+  adapter.on('message', messageListener);
+  adapter.on('sessionStatus', statusListener);
+
+  const response = await adapter.submitBtw('session-1', 'What changed?', 'btw-run-1');
+  expect(response).toEqual({ success: true, runId: 'btw-run-1' });
+  const chatSend = requests.find(request => request.method === 'chat.send');
+  expect(chatSend?.params).toMatchObject({
+    sessionKey,
+    message: '/btw What changed?',
+    deliver: false,
+    idempotencyKey: 'btw-run-1',
+  });
+  expect(session.messages).toEqual([]);
+  expect(adapter.activeTurns.get('session-1')).toBe(activeMainTurn);
+  expect(messageListener).not.toHaveBeenCalled();
+  expect(statusListener).not.toHaveBeenCalled();
+
+  adapter.handleGatewayEvent({
+    event: 'agent',
+    payload: {
+      runId: 'btw-run-1',
+      sessionKey,
+      stream: 'assistant',
+      data: { text: 'Side answer stream must stay ephemeral.' },
+    },
+  });
+  adapter.handleGatewayEvent({
+    event: 'chat',
+    payload: {
+      state: 'final',
+      runId: 'btw-run-1',
+      sessionKey,
+      message: { role: 'assistant', content: '' },
+    },
+  });
+  expect(adapter.activeTurns.get('session-1')).toBe(activeMainTurn);
+  expect(resultListener).not.toHaveBeenCalled();
+
+  const sideResult = {
+    kind: 'btw',
+    runId: 'btw-run-1',
+    sessionKey,
+    agentId: 'main',
+    question: 'What changed?',
+    text: '**Only docs.**',
+    ts: Date.now(),
+  };
+  adapter.handleGatewayEvent({
+    event: 'chat.side_result',
+    payload: sideResult,
+  });
+  adapter.handleGatewayEvent({
+    event: 'chat.side_result',
+    payload: sideResult,
+  });
+  adapter.handleGatewayEvent({
+    event: 'chat',
+    payload: {
+      state: 'final',
+      runId: 'btw-run-1',
+      sessionKey,
+      message: { role: 'assistant', content: '' },
+    },
+  });
+
+  expect(resultListener).toHaveBeenCalledTimes(1);
+  expect(resultListener).toHaveBeenCalledWith('session-1', {
+    runId: 'btw-run-1',
+    sessionId: 'session-1',
+    question: 'What changed?',
+    status: CoworkBtwStatus.Answered,
+    answer: '**Only docs.**',
+    createdAt: expect.any(Number),
+    completedAt: expect.any(Number),
+  });
+  expect(adapter.activeTurns.get('session-1')).toBe(activeMainTurn);
+  expect(session.messages).toEqual([]);
+  expect(messageListener).not.toHaveBeenCalled();
+  expect(statusListener).not.toHaveBeenCalled();
+});
+
+test('unknown BTW side results cannot mark an unrelated main run as terminal', () => {
+  const { adapter } = createRunTurnAdapter({
+    autoFinalizeChatSend: false,
+  });
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    adapter.handleGatewayEvent({
+      event: 'chat.side_result',
+      payload: {
+        kind: 'btw',
+        runId: 'main-run',
+        sessionKey: 'agent:main:lobsterai:session-1',
+        agentId: 'main',
+        question: 'Unexpected side result',
+        text: 'Unexpected answer',
+        ts: Date.now(),
+      },
+    });
+
+    expect(adapter.isTerminalBtwRunId('main-run')).toBe(false);
+    expect(adapter.handleBtwChatEvent({
+      state: 'final',
+      runId: 'main-run',
+    })).toBe(false);
+  } finally {
+    warn.mockRestore();
+  }
+});
+
+test('stopping a BTW request aborts only its run and leaves the active main turn unchanged', async () => {
+  const { adapter, requests, session } = createRunTurnAdapter({
+    autoFinalizeChatSend: false,
+  });
+  const sessionKey = 'agent:main:lobsterai:session-1';
+  const activeMainTurn = {
+    runId: 'main-run',
+    sessionKey,
+  };
+  adapter.activeTurns.set('session-1', activeMainTurn as never);
+  const resultListener = vi.fn();
+  const statusListener = vi.fn();
+  adapter.on('btwResult', resultListener);
+  adapter.on('sessionStatus', statusListener);
+
+  await expect(
+    adapter.submitBtw('session-1', 'Can you stop?', 'btw-run-stop'),
+  ).resolves.toEqual({
+    success: true,
+    runId: 'btw-run-stop',
+  });
+  const pendingStop = adapter.pendingBtwRunBySessionId.get('session-1');
+  expect(pendingStop).toBeDefined();
+  pendingStop!.stopRequested = true;
+  await expect(adapter.abortBtw('session-1', 'btw-run-stop')).resolves.toEqual({
+    success: true,
+    aborted: false,
+    runId: 'btw-run-stop',
+  });
+  expect(requests.some(request => request.method === 'chat.abort')).toBe(false);
+  pendingStop!.stopRequested = false;
+
+  await expect(adapter.abortBtw('session-1', 'btw-run-stop')).resolves.toEqual({
+    success: true,
+    aborted: true,
+    runId: 'btw-run-stop',
+  });
+
+  const abortRequest = requests.find(request => request.method === 'chat.abort');
+  expect(abortRequest?.params).toEqual({
+    sessionKey,
+    runId: 'btw-run-stop',
+  });
+  expect(resultListener).toHaveBeenCalledWith('session-1', expect.objectContaining({
+    runId: 'btw-run-stop',
+    status: CoworkBtwStatus.Stopped,
+  }));
+  expect(adapter.pendingBtwRunBySessionId.has('session-1')).toBe(false);
+  expect(adapter.activeTurns.get('session-1')).toBe(activeMainTurn);
+  expect(session.messages).toEqual([]);
+  expect(statusListener).not.toHaveBeenCalled();
+
+  adapter.handleGatewayEvent({
+    event: 'chat',
+    payload: {
+      state: 'aborted',
+      runId: 'btw-run-stop',
+      sessionKey,
+    },
+  });
+  expect(resultListener).toHaveBeenCalledTimes(1);
+  expect(adapter.activeTurns.get('session-1')).toBe(activeMainTurn);
+});
+
+test('BTW validates size, rejects mismatched routing, and accepts a normalized question', async () => {
+  const { adapter, requests } = createRunTurnAdapter({
+    autoFinalizeChatSend: false,
+  });
+  await expect(adapter.submitBtw(
+    'session-1',
+    'x'.repeat(COWORK_BTW_QUESTION_MAX_CHARS + 1),
+    'btw-run-too-long',
+  )).resolves.toMatchObject({
+    success: false,
+    runId: 'btw-run-too-long',
+  });
+  expect(requests).toHaveLength(0);
+  await expect(adapter.submitBtw(
+    'session-1',
+    'Question',
+    'x'.repeat(COWORK_BTW_IDENTIFIER_MAX_CHARS + 1),
+  )).resolves.toMatchObject({
+    success: false,
+  });
+  expect(requests).toHaveLength(0);
+
+  const resultListener = vi.fn();
+  adapter.on('btwResult', resultListener);
+  await expect(
+    adapter.submitBtw('session-1', 'Expected question?', 'btw-run-match'),
+  ).resolves.toEqual({
+    success: true,
+    runId: 'btw-run-match',
+  });
+
+  const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const consoleDebug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+  try {
+    adapter.handleGatewayEvent({
+      event: 'chat.side_result',
+      payload: {
+        kind: 'btw',
+        runId: 'external-btw-run',
+        sessionKey: 'agent:main:lobsterai:session-1',
+        agentId: 'main',
+        question: 'Expected question?',
+        text: 'External answer',
+        ts: Date.now(),
+      },
+    });
+    adapter.handleGatewayEvent({
+      event: 'chat.side_result',
+      payload: {
+        kind: 'btw',
+        runId: 'btw-run-match',
+        sessionKey: 'agent:main:lobsterai:another-session',
+        agentId: 'main',
+        question: 'Expected question?',
+        text: 'Wrong answer',
+        ts: Date.now(),
+      },
+    });
+  } finally {
+    consoleWarn.mockRestore();
+  }
+  expect(resultListener).not.toHaveBeenCalled();
+  expect(adapter.pendingBtwRunBySessionId.has('session-1')).toBe(true);
+
+  try {
+    adapter.handleGatewayEvent({
+      event: 'chat.side_result',
+      payload: {
+        kind: 'btw',
+        runId: 'btw-run-match',
+        sessionKey: 'agent:main:lobsterai:session-1',
+        agentId: 'main',
+        question: 'Runtime-normalized question?',
+        text: 'x'.repeat(COWORK_BTW_RESULT_MAX_CHARS + 1),
+        ts: Date.now(),
+      },
+    });
+  } finally {
+    consoleDebug.mockRestore();
+  }
+  const completedEntry = resultListener.mock.calls[0]?.[1];
+  expect(completedEntry).toMatchObject({
+    runId: 'btw-run-match',
+    status: CoworkBtwStatus.Answered,
+  });
+  expect(completedEntry.answer).toHaveLength(COWORK_BTW_RESULT_MAX_CHARS);
+  expect(completedEntry.answer).not.toBe('x'.repeat(COWORK_BTW_RESULT_MAX_CHARS));
+});
+
+test('BTW chat.send rejection fails only the ephemeral request', async () => {
+  const sendError = new Error('BTW requires an existing session transcript.');
+  const { adapter, session } = createRunTurnAdapter({
+    chatSendError: sendError,
+    autoFinalizeChatSend: false,
+  });
+  const resultListener = vi.fn();
+  const errorListener = vi.fn();
+  adapter.on('btwResult', resultListener);
+  adapter.on('error', errorListener);
+  const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+  const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    await expect(
+      adapter.submitBtw('session-1', 'Can you explain?', 'btw-run-error'),
+    ).resolves.toEqual({
+      success: false,
+      runId: 'btw-run-error',
+      error: sendError.message,
+    });
+  } finally {
+    consoleError.mockRestore();
+    consoleWarn.mockRestore();
+  }
+
+  expect(resultListener).toHaveBeenCalledWith('session-1', expect.objectContaining({
+    runId: 'btw-run-error',
+    status: CoworkBtwStatus.Failed,
+    error: sendError.message,
+  }));
+  expect(errorListener).not.toHaveBeenCalled();
+  expect(adapter.activeTurns.has('session-1')).toBe(false);
+  expect(adapter.pendingBtwRunBySessionId.has('session-1')).toBe(false);
+  expect(session.messages).toEqual([]);
+  expect(session.status).toBe('completed');
+});
+
+test('BTW pending state is failed on disconnect without touching the session', async () => {
+  const { adapter, session } = createRunTurnAdapter({
+    autoFinalizeChatSend: false,
+    holdChatSend: true,
+  });
+  const resultListener = vi.fn();
+  adapter.on('btwResult', resultListener);
+  void adapter.submitBtw('session-1', 'Still there?', 'btw-run-disconnect');
+  await vi.waitFor(() => {
+    expect(adapter.pendingBtwRunBySessionId.has('session-1')).toBe(true);
+  });
+
+  adapter.stopGatewayClient();
+
+  expect(resultListener).toHaveBeenCalledWith('session-1', expect.objectContaining({
+    runId: 'btw-run-disconnect',
+    status: CoworkBtwStatus.Failed,
+  }));
+  expect(adapter.pendingBtwRunBySessionId.has('session-1')).toBe(false);
+  expect(adapter.activeTurns.has('session-1')).toBe(false);
+  expect(session.messages).toEqual([]);
+  expect(session.status).toBe('completed');
+});
+
+test('BTW timeout clears its dedicated timer state without touching the session', async () => {
+  vi.useFakeTimers();
+  try {
+    const { adapter, session } = createRunTurnAdapter({
+      autoFinalizeChatSend: false,
+      holdChatSend: true,
+    });
+    adapter.agentTimeoutSeconds = 1;
+    const resultListener = vi.fn();
+    adapter.on('btwResult', resultListener);
+
+    void adapter.submitBtw('session-1', 'Still waiting?', 'btw-run-timeout');
+    await vi.advanceTimersByTimeAsync(1);
+    expect(adapter.pendingBtwRunBySessionId.has('session-1')).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(31_000);
+
+    expect(resultListener).toHaveBeenCalledWith('session-1', expect.objectContaining({
+      runId: 'btw-run-timeout',
+      status: CoworkBtwStatus.Failed,
+    }));
+    expect(adapter.pendingBtwRunBySessionId.has('session-1')).toBe(false);
+    expect(adapter.pendingBtwRuns.has('btw-run-timeout')).toBe(false);
+    expect(adapter.activeTurns.has('session-1')).toBe(false);
+    expect(session.messages).toEqual([]);
+    expect(session.status).toBe('completed');
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test('deleting a session silently discards its pending BTW request', async () => {
+  const { adapter } = createRunTurnAdapter({
+    autoFinalizeChatSend: false,
+    holdChatSend: true,
+  });
+  const resultListener = vi.fn();
+  adapter.on('btwResult', resultListener);
+  void adapter.submitBtw('session-1', 'Still there?', 'btw-run-delete');
+  await vi.waitFor(() => {
+    expect(adapter.pendingBtwRunBySessionId.has('session-1')).toBe(true);
+  });
+  adapter.subagentTracker.onSessionDeleted = vi.fn();
+
+  adapter.onSessionDeleted('session-1');
+
+  expect(resultListener).not.toHaveBeenCalled();
+  expect(adapter.pendingBtwRunBySessionId.has('session-1')).toBe(false);
+  expect(adapter.pendingBtwRuns.has('btw-run-delete')).toBe(false);
+});
 
 test('approved implementation exits plan mode and does not request another plan', async () => {
   const { adapter, requests, session } = createRunTurnAdapter();

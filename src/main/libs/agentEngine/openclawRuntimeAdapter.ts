@@ -20,6 +20,16 @@ import {
   type CoworkBrowserAnnotationMessageBatch,
 } from '../../../shared/cowork/browserAnnotations';
 import {
+  COWORK_BTW_IDENTIFIER_MAX_CHARS,
+  COWORK_BTW_QUESTION_MAX_CHARS,
+  COWORK_BTW_RESULT_MAX_CHARS,
+  type CoworkBtwAbortResponse,
+  type CoworkBtwEntry,
+  CoworkBtwStatus,
+  type CoworkBtwSubmitResponse,
+  normalizeCoworkBtwQuestion,
+} from '../../../shared/cowork/btw';
+import {
   CoworkIpcChannel,
   type CoworkSessionsChangedPayload,
 } from '../../../shared/cowork/constants';
@@ -181,10 +191,14 @@ import type {
 } from './types';
 
 const OPENCLAW_GATEWAY_TOOL_EVENTS_CAP = 'tool-events';
+const OPENCLAW_BTW_SESSION_KEY_MAX_CHARS = 4_096;
 const OpenClawGatewayEvent = {
+  ChatSideResult: 'chat.side_result',
   SessionsChanged: 'sessions.changed',
 } as const;
 const OpenClawGatewayMethod = {
+  ChatAbort: 'chat.abort',
+  ChatSend: 'chat.send',
   SessionsSubscribe: 'sessions.subscribe',
 } as const;
 const BRIDGE_MAX_MESSAGES = 20;
@@ -480,6 +494,30 @@ type OpenClawQueueSteerResult = {
   queued?: boolean;
   reason?: string;
   errorMessage?: string;
+};
+
+type PendingBtwRun = {
+  clientRunId: string;
+  gatewayRunIds: Set<string>;
+  sessionId: string;
+  sessionKey: string;
+  agentId: string;
+  question: string;
+  createdAt: number;
+  timeoutTimer: ReturnType<typeof setTimeout>;
+  stopRequested: boolean;
+};
+
+type OpenClawBtwSideResultPayload = {
+  kind: 'btw';
+  runId: string;
+  sessionKey: string;
+  agentId?: string;
+  question: string;
+  text: string;
+  isError?: boolean;
+  ts: number;
+  seq?: number;
 };
 
 type GatewayRpcHealth = {
@@ -1015,6 +1053,12 @@ type ChannelHistorySyncEntry = {
 
 const isRecord = (value: unknown): value is Record<string, unknown> => {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+};
+
+const truncateBtwResultText = (value: string): string => {
+  if (value.length <= COWORK_BTW_RESULT_MAX_CHARS) return value;
+  const suffix = `\n\n${t('coworkBtwResultTruncated')}`;
+  return `${value.slice(0, Math.max(0, COWORK_BTW_RESULT_MAX_CHARS - suffix.length))}${suffix}`;
 };
 
 const MODEL_SNAPSHOT_CUSTOM_TYPE = 'model-snapshot';
@@ -2180,6 +2224,9 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
    * events cannot re-create a ghost turn or attach to the next user turn.
    */
   private readonly recentlyClosedRunIds = new Map<string, RecentlyClosedRunInfo>();
+  private readonly pendingBtwRuns = new Map<string, PendingBtwRun>();
+  private readonly pendingBtwRunBySessionId = new Map<string, PendingBtwRun>();
+  private readonly terminalBtwRunIds = new Map<string, number>();
   private readonly pendingTurns = new Map<string, { resolve: () => void; reject: (error: Error) => void }>();
   private readonly confirmationModeBySession = new Map<string, 'modal' | 'text'>();
   private readonly bridgedSessions = new Set<string>();
@@ -2202,6 +2249,8 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
   private static readonly STOP_COOLDOWN_MS = 10_000; // 10 seconds
   private static readonly RECENTLY_CLOSED_RUN_ID_TTL_MS = 120_000;
   private static readonly RECENTLY_CLOSED_RUN_ID_LIMIT = 1000;
+  private static readonly TERMINAL_BTW_RUN_ID_TTL_MS = 120_000;
+  private static readonly TERMINAL_BTW_RUN_ID_LIMIT = 1000;
   private static readonly LIFECYCLE_ERROR_FALLBACK_DELAY_MS = 20_000;
   private static readonly CHAT_FINAL_COMPLETION_GRACE_MS = 800;
   private static readonly PLAN_MODE_RECOVERY_FOLLOWUP_GRACE_MS = 15_000;
@@ -4121,6 +4170,299 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     });
   }
 
+  async submitBtw(
+    sessionId: string,
+    question: string,
+    runId: string,
+  ): Promise<CoworkBtwSubmitResponse> {
+    const normalizedSessionId = sessionId.trim();
+    const normalizedRunId = runId.trim();
+    const normalizedQuestion = normalizeCoworkBtwQuestion(question);
+    if (!normalizedSessionId || !normalizedRunId) {
+      return {
+        success: false,
+        runId: normalizedRunId,
+        error: t('coworkBtwRequestRequired'),
+      };
+    }
+    if (
+      normalizedSessionId.length > COWORK_BTW_IDENTIFIER_MAX_CHARS
+      || normalizedRunId.length > COWORK_BTW_IDENTIFIER_MAX_CHARS
+    ) {
+      return {
+        success: false,
+        runId: normalizedRunId.slice(0, COWORK_BTW_IDENTIFIER_MAX_CHARS),
+        error: t('coworkBtwInvalidIdentifier'),
+      };
+    }
+    if (!normalizedQuestion) {
+      return {
+        success: false,
+        runId: normalizedRunId,
+        error: t('coworkBtwQuestionRequired'),
+      };
+    }
+    if (/[\r\n]/.test(normalizedQuestion)) {
+      return {
+        success: false,
+        runId: normalizedRunId,
+        error: t('coworkBtwSingleLine'),
+      };
+    }
+    if (normalizedQuestion.length > COWORK_BTW_QUESTION_MAX_CHARS) {
+      return {
+        success: false,
+        runId: normalizedRunId,
+        error: t('coworkBtwQuestionTooLong', {
+          limit: COWORK_BTW_QUESTION_MAX_CHARS,
+        }),
+      };
+    }
+    if (this.pendingBtwRunBySessionId.has(normalizedSessionId)) {
+      return {
+        success: false,
+        runId: normalizedRunId,
+        error: t('coworkBtwAlreadyPending'),
+      };
+    }
+    if (
+      this.pendingBtwRuns.has(normalizedRunId)
+      || this.sessionIdByRunId.has(normalizedRunId)
+    ) {
+      return {
+        success: false,
+        runId: normalizedRunId,
+        error: t('coworkBtwRunConflict'),
+      };
+    }
+
+    const session = this.store.getSession(normalizedSessionId);
+    if (!session) {
+      return {
+        success: false,
+        runId: normalizedRunId,
+        error: t('coworkBtwSessionNotFound', { sessionId: normalizedSessionId }),
+      };
+    }
+
+    const agentId = session.agentId || 'main';
+    const activeTurnSessionKey = this.activeTurns.get(normalizedSessionId)?.sessionKey?.trim();
+    const rememberedSessionKey = this.getSessionKeysForSession(normalizedSessionId)
+      .find((key) => !isManagedSessionKey(key));
+    const persistedChannelSession = this.channelSessionSync
+      ?.getOpenClawSessionKeyForCoworkSession(normalizedSessionId);
+    const persistedChannelSessionKey = persistedChannelSession?.sessionKey
+      && !isManagedSessionKey(persistedChannelSession.sessionKey)
+      ? persistedChannelSession.sessionKey
+      : '';
+    const sessionKey = activeTurnSessionKey
+      || rememberedSessionKey
+      || persistedChannelSessionKey
+      || this.toSessionKey(normalizedSessionId, agentId);
+
+    try {
+      await this.ensureGatewayClientReady();
+      if (this.pendingBtwRunBySessionId.has(normalizedSessionId)) {
+        return {
+          success: false,
+          runId: normalizedRunId,
+          error: t('coworkBtwAlreadyPending'),
+        };
+      }
+
+      this.rememberSessionKey(normalizedSessionId, sessionKey);
+      const pending = this.registerPendingBtwRun({
+        clientRunId: normalizedRunId,
+        sessionId: normalizedSessionId,
+        sessionKey,
+        agentId,
+        question: normalizedQuestion,
+      });
+      const runCwd = session.cwd?.trim() ? path.resolve(session.cwd.trim()) : undefined;
+      const chatSendParams = {
+        sessionKey,
+        message: `/btw ${normalizedQuestion}`,
+        deliver: false,
+        idempotencyKey: normalizedRunId,
+        ...(runCwd ? { cwd: runCwd } : {}),
+      };
+      assertOpenClawChatSendPayloadWithinLimit(normalizedSessionId, chatSendParams);
+      console.log(
+        '[CoworkBtw] submitting side question.',
+        `Session ${normalizedSessionId}.`,
+        `Run ${normalizedRunId}.`,
+        `OpenClaw key ${sessionKey}.`,
+        `Question chars ${normalizedQuestion.length}.`,
+        `Active main turn ${this.activeTurns.has(normalizedSessionId) ? 'yes' : 'no'}.`,
+      );
+      const sendResult = await this.requireGatewayClient().request<Record<string, unknown>>(
+        OpenClawGatewayMethod.ChatSend,
+        chatSendParams,
+        { timeoutMs: 90_000 },
+      );
+      const returnedRunId = typeof sendResult?.runId === 'string' ? sendResult.runId.trim() : '';
+      if (returnedRunId && !this.addPendingBtwRunAlias(pending, returnedRunId)) {
+        return {
+          success: false,
+          runId: normalizedRunId,
+          error: t('coworkBtwInvalidResult'),
+        };
+      }
+      return {
+        success: true,
+        runId: normalizedRunId,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const pending = this.pendingBtwRunBySessionId.get(normalizedSessionId);
+      if (pending?.clientRunId === normalizedRunId) {
+        this.failPendingBtwRun(pending, message, 'chat.send rejected');
+      } else if (this.isTerminalBtwRunId(normalizedRunId)) {
+        return {
+          success: true,
+          runId: normalizedRunId,
+        };
+      }
+      console.error(
+        '[CoworkBtw] failed to submit side question.',
+        `Session ${normalizedSessionId}.`,
+        `Run ${normalizedRunId}.`,
+        error,
+      );
+      return {
+        success: false,
+        runId: normalizedRunId,
+        error: message,
+      };
+    }
+  }
+
+  async abortBtw(sessionId: string, runId: string): Promise<CoworkBtwAbortResponse> {
+    const normalizedSessionId = sessionId.trim();
+    const normalizedRunId = runId.trim();
+    if (
+      !normalizedSessionId
+      || !normalizedRunId
+      || normalizedSessionId.length > COWORK_BTW_IDENTIFIER_MAX_CHARS
+      || normalizedRunId.length > COWORK_BTW_IDENTIFIER_MAX_CHARS
+    ) {
+      return {
+        success: false,
+        aborted: false,
+        runId: normalizedRunId.slice(0, COWORK_BTW_IDENTIFIER_MAX_CHARS),
+        error: t('coworkBtwInvalidIdentifier'),
+      };
+    }
+
+    const pending = this.pendingBtwRunBySessionId.get(normalizedSessionId);
+    if (!pending || pending.clientRunId !== normalizedRunId) {
+      return {
+        success: false,
+        aborted: false,
+        runId: normalizedRunId,
+        error: t('coworkBtwNoPending'),
+      };
+    }
+    if (pending.stopRequested) {
+      // A stop RPC is already in flight. Do not claim that the gateway
+      // confirmed it; the terminal stream event will settle every renderer.
+      return {
+        success: true,
+        aborted: false,
+        runId: normalizedRunId,
+      };
+    }
+
+    const client = this.gatewayClient;
+    if (!client) {
+      return {
+        success: false,
+        aborted: false,
+        runId: normalizedRunId,
+        error: t('coworkBtwStopFailed'),
+      };
+    }
+
+    pending.stopRequested = true;
+    console.log(
+      '[CoworkBtw] stopping side question.',
+      `Session ${normalizedSessionId}.`,
+      `Run ${normalizedRunId}.`,
+    );
+    try {
+      const gatewayRunIds = Array.from(pending.gatewayRunIds).reverse();
+      let aborted = false;
+      for (const gatewayRunId of gatewayRunIds) {
+        const result = await client.request<{
+          aborted?: boolean;
+          runIds?: unknown;
+        }>(
+          OpenClawGatewayMethod.ChatAbort,
+          {
+            sessionKey: pending.sessionKey,
+            runId: gatewayRunId,
+          },
+          { timeoutMs: 10_000 },
+        );
+        const abortedRunIds = Array.isArray(result?.runIds)
+          ? result.runIds.filter((value): value is string => typeof value === 'string')
+          : [];
+        if (
+          result?.aborted === true
+          && abortedRunIds.some(abortedRunId => pending.gatewayRunIds.has(abortedRunId))
+        ) {
+          aborted = true;
+          break;
+        }
+      }
+
+      if (this.pendingBtwRunBySessionId.get(normalizedSessionId) !== pending) {
+        return {
+          success: true,
+          aborted,
+          runId: normalizedRunId,
+        };
+      }
+      if (!aborted) {
+        pending.stopRequested = false;
+        console.warn(
+          '[CoworkBtw] gateway did not confirm side-question stop.',
+          `Session ${normalizedSessionId}.`,
+          `Run ${normalizedRunId}.`,
+        );
+        return {
+          success: false,
+          aborted: false,
+          runId: normalizedRunId,
+          error: t('coworkBtwStopFailed'),
+        };
+      }
+
+      this.stopPendingBtwRun(pending, 'user requested stop');
+      return {
+        success: true,
+        aborted: true,
+        runId: normalizedRunId,
+      };
+    } catch (error) {
+      if (this.pendingBtwRunBySessionId.get(normalizedSessionId) === pending) {
+        pending.stopRequested = false;
+      }
+      console.error(
+        '[CoworkBtw] failed to stop side question.',
+        `Session ${normalizedSessionId}.`,
+        `Run ${normalizedRunId}.`,
+        error,
+      );
+      return {
+        success: false,
+        aborted: false,
+        runId: normalizedRunId,
+        error: t('coworkBtwStopFailed'),
+      };
+    }
+  }
+
   async submitSteer(
     sessionId: string,
     text: string,
@@ -4969,7 +5311,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       const chatSendStartMs = Date.now();
       firstResponseTiming.chatSendStartedAtMs = chatSendStartMs;
       const sendResult = await client.request<Record<string, unknown>>(
-        'chat.send',
+        OpenClawGatewayMethod.ChatSend,
         chatSendParams,
         { timeoutMs: 90_000 },
       );
@@ -5437,6 +5779,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
 
   private stopGatewayClient(): void {
     this.gatewayStoppingIntentionally = true;
+    this.failAllPendingBtwRuns(t('coworkBtwDisconnected'), 'gateway stopped');
     this.gatewayClientGeneration += 1;
     this.stopChannelPolling();
     this.cancelGatewayReconnect();
@@ -5472,6 +5815,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     this.channelLifecycleRunBySessionKey.clear();
     this.stoppedSessions.clear();
     this.recentlyClosedRunIds.clear();
+    this.terminalBtwRunIds.clear();
     this.browserPrewarmAttempted = false;
     this.lastTickTimestamp = 0;
     // Clear messageUpdate throttle state
@@ -5482,6 +5826,202 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     this.lastMessageUpdateEmitTime.clear();
     this.turnHistorySync.dispose();
     this.gatewayStoppingIntentionally = false;
+  }
+
+  private registerPendingBtwRun(input: {
+    clientRunId: string;
+    sessionId: string;
+    sessionKey: string;
+    agentId: string;
+    question: string;
+  }): PendingBtwRun {
+    const timeoutSeconds = Number.isFinite(this.agentTimeoutSeconds)
+      ? Math.max(1, this.agentTimeoutSeconds)
+      : OPENCLAW_AGENT_TIMEOUT_SECONDS;
+    const timeoutMs = (timeoutSeconds * 1000)
+      + OpenClawRuntimeAdapter.CLIENT_TIMEOUT_GRACE_MS;
+    let pending!: PendingBtwRun;
+    const timeoutTimer = setTimeout(() => {
+      this.failPendingBtwRun(
+        pending,
+        t('coworkBtwTimeout'),
+        'timeout',
+      );
+    }, timeoutMs);
+    pending = {
+      ...input,
+      gatewayRunIds: new Set([input.clientRunId]),
+      createdAt: Date.now(),
+      timeoutTimer,
+      stopRequested: false,
+    };
+    this.terminalBtwRunIds.delete(input.clientRunId);
+    this.pendingBtwRuns.set(input.clientRunId, pending);
+    this.pendingBtwRunBySessionId.set(input.sessionId, pending);
+    return pending;
+  }
+
+  private addPendingBtwRunAlias(pending: PendingBtwRun, runId: string): boolean {
+    const normalizedRunId = runId.trim();
+    if (!normalizedRunId) return false;
+    if (this.pendingBtwRunBySessionId.get(pending.sessionId) !== pending) {
+      if (this.isTerminalBtwRunId(pending.clientRunId)) {
+        this.rememberTerminalBtwRunId(normalizedRunId);
+      }
+      return true;
+    }
+    if (this.sessionIdByRunId.has(normalizedRunId)) {
+      this.failPendingBtwRun(
+        pending,
+        t('coworkBtwInvalidResult'),
+        'gateway run id collided with a main run',
+      );
+      return false;
+    }
+    const existing = this.pendingBtwRuns.get(normalizedRunId);
+    if (existing && existing !== pending) {
+      console.warn(
+        '[CoworkBtw] refused duplicate gateway run id alias.',
+        `Run ${normalizedRunId}.`,
+        `Session ${pending.sessionId}.`,
+      );
+      this.failPendingBtwRun(
+        pending,
+        t('coworkBtwInvalidResult'),
+        'duplicate gateway run id alias',
+      );
+      return false;
+    }
+    pending.gatewayRunIds.add(normalizedRunId);
+    this.pendingBtwRuns.set(normalizedRunId, pending);
+    return true;
+  }
+
+  private cleanupPendingBtwRun(pending: PendingBtwRun): void {
+    clearTimeout(pending.timeoutTimer);
+    for (const gatewayRunId of pending.gatewayRunIds) {
+      if (this.pendingBtwRuns.get(gatewayRunId) === pending) {
+        this.pendingBtwRuns.delete(gatewayRunId);
+      }
+      this.rememberTerminalBtwRunId(gatewayRunId);
+    }
+    if (this.pendingBtwRunBySessionId.get(pending.sessionId) === pending) {
+      this.pendingBtwRunBySessionId.delete(pending.sessionId);
+    }
+  }
+
+  private finishPendingBtwRun(
+    pending: PendingBtwRun,
+    result: { answer?: string; error?: string },
+  ): void {
+    if (this.pendingBtwRunBySessionId.get(pending.sessionId) !== pending) return;
+    this.cleanupPendingBtwRun(pending);
+    const completedAt = Date.now();
+    const entry: CoworkBtwEntry = result.error
+      ? {
+          runId: pending.clientRunId,
+          sessionId: pending.sessionId,
+          question: pending.question,
+          status: CoworkBtwStatus.Failed,
+          error: result.error,
+          createdAt: pending.createdAt,
+          completedAt,
+        }
+      : {
+          runId: pending.clientRunId,
+          sessionId: pending.sessionId,
+          question: pending.question,
+          status: CoworkBtwStatus.Answered,
+          answer: result.answer ?? '',
+          createdAt: pending.createdAt,
+          completedAt,
+        };
+    this.emit('btwResult', pending.sessionId, entry);
+  }
+
+  private failPendingBtwRun(
+    pending: PendingBtwRun,
+    error: string,
+    reason: string,
+  ): void {
+    if (this.pendingBtwRunBySessionId.get(pending.sessionId) !== pending) return;
+    const normalizedError = error.trim() || t('coworkBtwFailed');
+    console.warn(
+      '[CoworkBtw] side question failed.',
+      `Session ${pending.sessionId}.`,
+      `Run ${pending.clientRunId}.`,
+      `Reason ${reason}.`,
+    );
+    this.finishPendingBtwRun(pending, { error: normalizedError });
+  }
+
+  private stopPendingBtwRun(pending: PendingBtwRun, reason: string): void {
+    if (this.pendingBtwRunBySessionId.get(pending.sessionId) !== pending) return;
+    this.cleanupPendingBtwRun(pending);
+    console.log(
+      '[CoworkBtw] side question stopped.',
+      `Session ${pending.sessionId}.`,
+      `Run ${pending.clientRunId}.`,
+      `Reason ${reason}.`,
+    );
+    this.emit('btwResult', pending.sessionId, {
+      runId: pending.clientRunId,
+      sessionId: pending.sessionId,
+      question: pending.question,
+      status: CoworkBtwStatus.Stopped,
+      createdAt: pending.createdAt,
+      completedAt: Date.now(),
+    } satisfies CoworkBtwEntry);
+  }
+
+  private failAllPendingBtwRuns(error: string, reason: string): void {
+    const pendingRuns = Array.from(new Set(this.pendingBtwRunBySessionId.values()));
+    for (const pending of pendingRuns) {
+      this.failPendingBtwRun(pending, error, reason);
+    }
+  }
+
+  private discardPendingBtwRunsForSession(sessionId: string): void {
+    const pending = this.pendingBtwRunBySessionId.get(sessionId);
+    if (!pending) return;
+    this.cleanupPendingBtwRun(pending);
+  }
+
+  private pruneTerminalBtwRunIds(now = Date.now()): void {
+    for (const [runId, expiresAt] of this.terminalBtwRunIds.entries()) {
+      if (expiresAt <= now) {
+        this.terminalBtwRunIds.delete(runId);
+      }
+    }
+    while (this.terminalBtwRunIds.size > OpenClawRuntimeAdapter.TERMINAL_BTW_RUN_ID_LIMIT) {
+      const oldestRunId = this.terminalBtwRunIds.keys().next().value as string | undefined;
+      if (!oldestRunId) return;
+      this.terminalBtwRunIds.delete(oldestRunId);
+    }
+  }
+
+  private rememberTerminalBtwRunId(runId: string): void {
+    const normalizedRunId = runId.trim();
+    if (!normalizedRunId) return;
+    const now = Date.now();
+    this.terminalBtwRunIds.delete(normalizedRunId);
+    this.terminalBtwRunIds.set(
+      normalizedRunId,
+      now + OpenClawRuntimeAdapter.TERMINAL_BTW_RUN_ID_TTL_MS,
+    );
+    this.pruneTerminalBtwRunIds(now);
+  }
+
+  private isTerminalBtwRunId(runId: string): boolean {
+    const normalizedRunId = runId.trim();
+    if (!normalizedRunId) return false;
+    const expiresAt = this.terminalBtwRunIds.get(normalizedRunId);
+    if (!expiresAt) return false;
+    if (expiresAt <= Date.now()) {
+      this.terminalBtwRunIds.delete(normalizedRunId);
+      return false;
+    }
+    return true;
   }
 
   private pruneRecentlyClosedRunIds(now = Date.now()): void {
@@ -6229,6 +6769,167 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     );
   }
 
+  private normalizeBtwSideResultPayload(payload: unknown): OpenClawBtwSideResultPayload | null {
+    if (!isRecord(payload) || payload.kind !== 'btw') return null;
+    const runId = typeof payload.runId === 'string' ? payload.runId.trim() : '';
+    const sessionKey = typeof payload.sessionKey === 'string' ? payload.sessionKey.trim() : '';
+    const agentId = typeof payload.agentId === 'string' ? payload.agentId.trim() : undefined;
+    const question = typeof payload.question === 'string'
+      ? normalizeCoworkBtwQuestion(payload.question)
+      : '';
+    const text = typeof payload.text === 'string'
+      ? truncateBtwResultText(payload.text)
+      : '';
+    const ts = typeof payload.ts === 'number' && Number.isFinite(payload.ts) ? payload.ts : NaN;
+    if (
+      !runId
+      || !sessionKey
+      || !question
+      || runId.length > COWORK_BTW_IDENTIFIER_MAX_CHARS
+      || sessionKey.length > OPENCLAW_BTW_SESSION_KEY_MAX_CHARS
+      || (agentId?.length ?? 0) > COWORK_BTW_IDENTIFIER_MAX_CHARS
+      || /[\r\n]/.test(question)
+      || question.length > COWORK_BTW_QUESTION_MAX_CHARS
+      || !Number.isFinite(ts)
+    ) {
+      return null;
+    }
+    return {
+      kind: 'btw',
+      runId,
+      sessionKey,
+      ...(agentId ? { agentId } : {}),
+      question,
+      text,
+      ...(payload.isError === true ? { isError: true } : {}),
+      ts,
+      ...(typeof payload.seq === 'number' && Number.isFinite(payload.seq)
+        ? { seq: payload.seq }
+        : {}),
+    };
+  }
+
+  private handleBtwSideResult(payload: unknown): void {
+    const result = this.normalizeBtwSideResultPayload(payload);
+    if (!result) {
+      const rawRunId = isRecord(payload) && typeof payload.runId === 'string'
+        ? payload.runId.trim()
+        : '';
+      const malformedRunId = rawRunId.length <= COWORK_BTW_IDENTIFIER_MAX_CHARS
+        ? rawRunId
+        : '';
+      const pending = malformedRunId ? this.pendingBtwRuns.get(malformedRunId) : undefined;
+      if (pending) {
+        this.failPendingBtwRun(
+          pending,
+          t('coworkBtwInvalidResult'),
+          'malformed side result',
+        );
+      }
+      console.warn('[CoworkBtw] dropped malformed chat.side_result payload.');
+      return;
+    }
+
+    const pending = this.pendingBtwRuns.get(result.runId);
+    if (!pending) {
+      if (this.isTerminalBtwRunId(result.runId)) {
+        console.debug(
+          '[CoworkBtw] ignored duplicate terminal side result.',
+          `Run ${result.runId}.`,
+        );
+        return;
+      }
+      console.warn(
+        '[CoworkBtw] dropped side result without a pending request.',
+        `Run ${result.runId}.`,
+        `OpenClaw key ${result.sessionKey}.`,
+      );
+      return;
+    }
+
+    const mappedSessionId = this.resolveSessionIdBySessionKey(result.sessionKey);
+    if (
+      result.sessionKey !== pending.sessionKey
+      || (result.agentId && result.agentId !== pending.agentId)
+      || (mappedSessionId && mappedSessionId !== pending.sessionId)
+    ) {
+      console.warn(
+        '[CoworkBtw] dropped side result because session or agent routing did not match.',
+        `Run ${result.runId}.`,
+        `Expected session ${pending.sessionId}.`,
+        `Mapped session ${mappedSessionId ?? 'none'}.`,
+      );
+      return;
+    }
+    if (result.question !== pending.question) {
+      console.debug(
+        '[CoworkBtw] accepted side result with a runtime-normalized question.',
+        `Run ${result.runId}.`,
+        `Submitted chars ${pending.question.length}.`,
+        `Returned chars ${result.question.length}.`,
+      );
+    }
+
+    if (!this.addPendingBtwRunAlias(pending, result.runId)) {
+      return;
+    }
+    console.log(
+      '[CoworkBtw] received side result.',
+      `Session ${pending.sessionId}.`,
+      `Run ${result.runId}.`,
+      `Answer chars ${result.text.length}.`,
+      `Error ${result.isError ? 'yes' : 'no'}.`,
+    );
+    if (result.isError && pending.stopRequested) {
+      this.stopPendingBtwRun(pending, 'gateway returned an error after stop');
+      return;
+    }
+    if (result.isError) {
+      this.finishPendingBtwRun(pending, {
+        error: result.text.trim() || t('coworkBtwFailed'),
+      });
+      return;
+    }
+    this.finishPendingBtwRun(pending, { answer: result.text });
+  }
+
+  private handleBtwChatEvent(payload: unknown): boolean {
+    if (!isRecord(payload)) return false;
+    const runId = typeof payload.runId === 'string' ? payload.runId.trim() : '';
+    if (!runId) return false;
+    const pending = this.pendingBtwRuns.get(runId);
+    if (!pending && !this.isTerminalBtwRunId(runId)) {
+      return false;
+    }
+
+    const state = typeof payload.state === 'string' ? payload.state : '';
+    if (pending && (state === 'aborted' || state === 'error')) {
+      if (pending.stopRequested) {
+        this.stopPendingBtwRun(pending, `chat ${state}`);
+      } else {
+        const error = typeof payload.errorMessage === 'string' && payload.errorMessage.trim()
+          ? payload.errorMessage.trim()
+          : t('coworkBtwFailed');
+        this.failPendingBtwRun(pending, error, `chat ${state}`);
+      }
+    }
+    console.debug(
+      '[CoworkBtw] suppressed chat event for side-question run.',
+      `Run ${runId}.`,
+      `State ${state || 'unknown'}.`,
+    );
+    return true;
+  }
+
+  private isBtwAgentEvent(payload: unknown): boolean {
+    if (!isRecord(payload)) return false;
+    const runId = typeof payload.runId === 'string' ? payload.runId.trim() : '';
+    return Boolean(
+      runId
+      && (this.pendingBtwRuns.has(runId) || this.isTerminalBtwRunId(runId)),
+    );
+  }
+
   private handleGatewayEvent(event: GatewayEventFrame): void {
     // Any event from the gateway proves the connection is alive.
     // Previously only 'tick' updated this timestamp, but during heavy exec
@@ -6253,12 +6954,24 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       return;
     }
 
+    if (event.event === OpenClawGatewayEvent.ChatSideResult) {
+      this.handleBtwSideResult(event.payload);
+      return;
+    }
+
     if (event.event === 'chat') {
+      if (this.handleBtwChatEvent(event.payload)) {
+        return;
+      }
       this.handleChatEvent(event.payload, event.seq);
       return;
     }
 
     if (event.event === 'agent') {
+      if (this.isBtwAgentEvent(event.payload)) {
+        console.debug('[CoworkBtw] suppressed agent event for side-question run.');
+        return;
+      }
       const diagnostic = summarizeAgentEventForThinkingDiagnostics(event.payload, event.seq);
       if (diagnostic) {
         logThinkingDiagnostic(diagnostic);
@@ -8595,7 +9308,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
         return true;
       }
       const sendResult = await this.requireGatewayClient().request<Record<string, unknown>>(
-        'chat.send',
+        OpenClawGatewayMethod.ChatSend,
         chatSendParams,
         { timeoutMs: 90_000 },
       );
@@ -8770,7 +9483,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     try {
       assertOpenClawChatSendPayloadWithinLimit(sessionId, chatSendParams);
       const sendResult = await this.requireGatewayClient().request<Record<string, unknown>>(
-        'chat.send',
+        OpenClawGatewayMethod.ChatSend,
         chatSendParams,
         { timeoutMs: 90_000 },
       );
@@ -10351,6 +11064,8 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
    * with the same sessionKey can create a fresh session.
    */
   onSessionDeleted(sessionId: string): void {
+    this.discardPendingBtwRunsForSession(sessionId);
+
     // Remove sessionIdBySessionKey entries pointing to this session
     const removedKeys: string[] = [];
     for (const [key, id] of this.sessionIdBySessionKey.entries()) {

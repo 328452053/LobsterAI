@@ -1,0 +1,368 @@
+import {
+  ArrowsPointingOutIcon,
+  ArrowUpIcon,
+  StopIcon,
+  XMarkIcon,
+} from '@heroicons/react/24/outline';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import { createPortal } from 'react-dom';
+
+import {
+  COWORK_BTW_DRAFT_MAX_CHARS,
+  COWORK_BTW_QUESTION_MAX_CHARS,
+  CoworkBtwStatus,
+  type CoworkBtwThread,
+  normalizeCoworkBtwSelectedTextQuestion,
+} from '../../../shared/cowork/btw';
+import { i18nService } from '../../services/i18n';
+import MarkdownContent from '../MarkdownContent';
+import {
+  clampCoworkBtwPanelGeometry,
+  type CoworkBtwPanelGeometry,
+  getInitialCoworkBtwPanelGeometry,
+} from './coworkBtwPanelGeometry';
+
+interface CoworkBtwFloatingPanelProps {
+  thread: CoworkBtwThread;
+  onClose: () => void;
+  onDraftChange: (draft: string) => void;
+  onSubmit: () => void;
+  onStop: (runId: string) => void;
+  resolveLocalFilePath?: (href: string, text: string) => string | null;
+}
+
+interface PointerOperation {
+  pointerId: number;
+  startClientX: number;
+  startClientY: number;
+  startGeometry: CoworkBtwPanelGeometry;
+}
+
+const getViewport = () => ({
+  width: window.innerWidth,
+  height: window.innerHeight,
+});
+
+const logPanelGeometry = (
+  action: 'dragged' | 'resized',
+  geometry: CoworkBtwPanelGeometry,
+): void => {
+  try {
+    window.electron?.log?.fromRenderer?.(
+      'debug',
+      'CoworkBtwFloatingPanel',
+      `${action} side-chat window; x=${Math.round(geometry.x)}; y=${Math.round(geometry.y)}; `
+      + `width=${Math.round(geometry.width)}; height=${Math.round(geometry.height)}.`,
+    );
+  } catch (error) {
+    console.debug('[CoworkBtwFloatingPanel] failed to persist geometry diagnostic.', error);
+  }
+};
+
+const CoworkBtwFloatingPanel: React.FC<CoworkBtwFloatingPanelProps> = ({
+  thread,
+  onClose,
+  onDraftChange,
+  onSubmit,
+  onStop,
+  resolveLocalFilePath,
+}) => {
+  const [geometry, setGeometry] = useState(() => (
+    typeof window === 'undefined'
+      ? { x: 16, y: 16, width: 440, height: 520 }
+      : getInitialCoworkBtwPanelGeometry(getViewport())
+  ));
+  const geometryRef = useRef(geometry);
+  geometryRef.current = geometry;
+  const dragRef = useRef<PointerOperation | null>(null);
+  const resizeRef = useRef<PointerOperation | null>(null);
+  const messageListRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const pendingEntry = useMemo(
+    () => thread.entries.find(entry => entry.status === CoworkBtwStatus.Pending),
+    [thread.entries],
+  );
+  const pending = Boolean(pendingEntry);
+  const normalizedDraftLength = normalizeCoworkBtwSelectedTextQuestion(thread.draft).length;
+  const canSubmit = normalizedDraftLength > 0
+    && normalizedDraftLength <= COWORK_BTW_QUESTION_MAX_CHARS
+    && !pending;
+
+  useEffect(() => {
+    const handleResize = () => {
+      setGeometry(current => clampCoworkBtwPanelGeometry(current, getViewport()));
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  useEffect(() => {
+    if (!thread.isOpen) return;
+    const messageList = messageListRef.current;
+    if (messageList) {
+      messageList.scrollTop = messageList.scrollHeight;
+    }
+  }, [thread.entries, thread.isOpen]);
+
+  useEffect(() => {
+    if (!thread.isOpen) return;
+    if (document.activeElement !== inputRef.current) {
+      inputRef.current?.focus();
+    }
+  }, [thread.isOpen, thread.sessionId]);
+
+  const handleDragPointerDown = useCallback((
+    event: React.PointerEvent<HTMLDivElement>,
+  ) => {
+    if (event.button !== 0) return;
+    dragRef.current = {
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startGeometry: geometry,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  }, [geometry]);
+
+  const handleDragPointerMove = useCallback((
+    event: React.PointerEvent<HTMLDivElement>,
+  ) => {
+    const operation = dragRef.current;
+    if (!operation || operation.pointerId !== event.pointerId) return;
+    setGeometry(clampCoworkBtwPanelGeometry({
+      ...operation.startGeometry,
+      x: operation.startGeometry.x + event.clientX - operation.startClientX,
+      y: operation.startGeometry.y + event.clientY - operation.startClientY,
+    }, getViewport()));
+  }, []);
+
+  const handleDragPointerEnd = useCallback((
+    event: React.PointerEvent<HTMLDivElement>,
+  ) => {
+    if (dragRef.current?.pointerId !== event.pointerId) return;
+    dragRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    logPanelGeometry('dragged', geometryRef.current);
+  }, []);
+
+  const handleResizePointerDown = useCallback((
+    event: React.PointerEvent<HTMLButtonElement>,
+  ) => {
+    if (event.button !== 0) return;
+    resizeRef.current = {
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startGeometry: geometry,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    event.preventDefault();
+    event.stopPropagation();
+  }, [geometry]);
+
+  const handleResizePointerMove = useCallback((
+    event: React.PointerEvent<HTMLButtonElement>,
+  ) => {
+    const operation = resizeRef.current;
+    if (!operation || operation.pointerId !== event.pointerId) return;
+    setGeometry(clampCoworkBtwPanelGeometry({
+      ...operation.startGeometry,
+      width: operation.startGeometry.width + event.clientX - operation.startClientX,
+      height: operation.startGeometry.height + event.clientY - operation.startClientY,
+    }, getViewport()));
+  }, []);
+
+  const handleResizePointerEnd = useCallback((
+    event: React.PointerEvent<HTMLButtonElement>,
+  ) => {
+    if (resizeRef.current?.pointerId !== event.pointerId) return;
+    resizeRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    logPanelGeometry('resized', geometryRef.current);
+  }, []);
+
+  if (!thread.isOpen || typeof document === 'undefined') {
+    return null;
+  }
+
+  return createPortal(
+    <section
+      data-cowork-btw-floating-panel
+      role="dialog"
+      aria-label={i18nService.t('coworkBtwWindowTitle')}
+      className="non-draggable fixed z-40 flex overflow-hidden rounded-xl border border-border bg-surface shadow-2xl"
+      style={{
+        left: geometry.x,
+        top: geometry.y,
+        width: geometry.width,
+        height: geometry.height,
+      }}
+    >
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <div
+          data-cowork-btw-drag-handle
+          onPointerDown={handleDragPointerDown}
+          onPointerMove={handleDragPointerMove}
+          onPointerUp={handleDragPointerEnd}
+          onPointerCancel={handleDragPointerEnd}
+          className="flex h-12 shrink-0 touch-none select-none items-center gap-2 border-b border-border bg-surface-raised px-3 cursor-move"
+        >
+          <span className="h-2 w-2 shrink-0 rounded-full bg-primary" aria-hidden="true" />
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-sm font-semibold text-foreground">
+              {i18nService.t('coworkBtwWindowTitle')}
+            </div>
+            <div className="truncate text-[11px] text-muted">
+              {i18nService.t('coworkBtwWindowSubtitle')}
+            </div>
+          </div>
+          <button
+            type="button"
+            onPointerDown={event => event.stopPropagation()}
+            onClick={onClose}
+            className="shrink-0 rounded-md p-1.5 text-muted transition-colors hover:bg-surface hover:text-foreground"
+            title={i18nService.t('coworkBtwCloseWindow')}
+            aria-label={i18nService.t('coworkBtwCloseWindow')}
+          >
+            <XMarkIcon className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div
+          ref={messageListRef}
+          aria-live="polite"
+          className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3"
+        >
+          {thread.entries.length === 0 && (
+            <div className="flex h-full min-h-32 items-center justify-center px-6 text-center text-sm text-muted">
+              {i18nService.t('coworkBtwEmptyThread')}
+            </div>
+          )}
+          <div className="space-y-3">
+            {thread.entries.map(entry => (
+              <article key={entry.runId} className="space-y-2">
+                <div className="flex justify-end">
+                  <div className="w-fit max-w-[85%] rounded-lg bg-primary/10 px-3 py-2 text-sm whitespace-pre-wrap break-words text-foreground">
+                    {entry.question}
+                  </div>
+                </div>
+                <div className="mr-8 rounded-lg border border-border bg-surface-raised px-3 py-2">
+                  {entry.status === CoworkBtwStatus.Pending && (
+                    <div className="flex items-center gap-2 text-sm text-muted">
+                      <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
+                      {i18nService.t('coworkBtwPending')}
+                    </div>
+                  )}
+                  {entry.status === CoworkBtwStatus.Answered && (
+                    <MarkdownContent
+                      content={entry.answer ?? ''}
+                      className="prose dark:prose-invert max-w-none text-sm text-foreground"
+                      spacing="compact"
+                      resolveLocalFilePath={resolveLocalFilePath}
+                      showRevealInFolderAction
+                      enableLargePreview={false}
+                    />
+                  )}
+                  {entry.status === CoworkBtwStatus.Failed && (
+                    <p className="whitespace-pre-wrap break-words text-sm text-danger">
+                      {entry.error || i18nService.t('coworkBtwFailed')}
+                    </p>
+                  )}
+                  {entry.status === CoworkBtwStatus.Stopped && (
+                    <p className="text-sm text-muted">
+                      {i18nService.t('coworkBtwStopped')}
+                    </p>
+                  )}
+                </div>
+              </article>
+            ))}
+          </div>
+        </div>
+
+        <div className="shrink-0 border-t border-border bg-surface p-3">
+          <div className="rounded-lg border border-border bg-background focus-within:border-primary/60">
+            <textarea
+              ref={inputRef}
+              value={thread.draft}
+              onChange={event => onDraftChange(event.target.value)}
+              onKeyDown={(event) => {
+                if (
+                  event.key === 'Enter'
+                  && !event.shiftKey
+                  && !event.nativeEvent.isComposing
+                ) {
+                  event.preventDefault();
+                  if (canSubmit) onSubmit();
+                }
+              }}
+              rows={3}
+              maxLength={COWORK_BTW_DRAFT_MAX_CHARS}
+              aria-label={i18nService.t('coworkBtwInputPlaceholder')}
+              placeholder={i18nService.t('coworkBtwInputPlaceholder')}
+              className="block max-h-32 min-h-20 w-full resize-none bg-transparent px-3 py-2 text-sm text-foreground outline-none placeholder:text-muted"
+            />
+            <div className="flex items-center justify-between gap-2 px-2 pb-2">
+              <span className={`text-[10px] ${
+                normalizedDraftLength > COWORK_BTW_QUESTION_MAX_CHARS
+                  ? 'text-danger'
+                  : 'text-muted'
+              }`}
+              >
+                {normalizedDraftLength}/{COWORK_BTW_QUESTION_MAX_CHARS}
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  if (pendingEntry) {
+                    onStop(pendingEntry.runId);
+                  } else {
+                    onSubmit();
+                  }
+                }}
+                disabled={!pendingEntry && !canSubmit}
+                className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-primary text-white transition-opacity disabled:cursor-not-allowed disabled:opacity-40"
+                title={i18nService.t(pendingEntry ? 'coworkBtwStop' : 'coworkBtwSend')}
+                aria-label={i18nService.t(pendingEntry ? 'coworkBtwStop' : 'coworkBtwSend')}
+              >
+                {pendingEntry
+                  ? <StopIcon className="h-4 w-4 fill-current" />
+                  : <ArrowUpIcon className="h-4 w-4" />}
+              </button>
+            </div>
+          </div>
+          <div className="mt-1.5 text-[10px] text-muted">
+            {i18nService.t('coworkBtwFollowUpHint')}
+          </div>
+        </div>
+      </div>
+
+      <button
+        type="button"
+        data-cowork-btw-resize-handle
+        onPointerDown={handleResizePointerDown}
+        onPointerMove={handleResizePointerMove}
+        onPointerUp={handleResizePointerEnd}
+        onPointerCancel={handleResizePointerEnd}
+        className="absolute bottom-0 right-0 flex h-5 w-5 touch-none items-end justify-end p-0.5 text-muted cursor-nwse-resize"
+        title={i18nService.t('coworkBtwResizeWindow')}
+        aria-label={i18nService.t('coworkBtwResizeWindow')}
+      >
+        <ArrowsPointingOutIcon className="h-3 w-3 rotate-90" />
+      </button>
+    </section>,
+    document.body,
+  );
+};
+
+export default CoworkBtwFloatingPanel;

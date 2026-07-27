@@ -14,6 +14,13 @@ import { AuthIpcChannel } from '../shared/auth/constants';
 import { BrowserIpc, type BrowserRuntimeProfile } from '../shared/browserWebAccess/constants';
 import { ClipboardIpc } from '../shared/clipboard/constants';
 import type { CoworkBrowserAnnotationMessageBatch } from '../shared/cowork/browserAnnotations';
+import type {
+  CoworkBtwAbortRequest,
+  CoworkBtwAbortResponse,
+  CoworkBtwEntry,
+  CoworkBtwSubmitRequest,
+  CoworkBtwSubmitResponse,
+} from '../shared/cowork/btw';
 import {
   CoworkIpcChannel,
   type CoworkSessionsChangedPayload,
@@ -417,6 +424,10 @@ contextBridge.exposeInMainWorld('electron', {
         dataUrl?: string; role?: string;
       }>;
     }) => ipcRenderer.invoke('cowork:session:continue', options),
+    submitBtw: (options: CoworkBtwSubmitRequest): Promise<CoworkBtwSubmitResponse> =>
+      ipcRenderer.invoke(CoworkIpcChannel.SubmitBtw, options),
+    abortBtw: (options: CoworkBtwAbortRequest): Promise<CoworkBtwAbortResponse> =>
+      ipcRenderer.invoke(CoworkIpcChannel.AbortBtw, options),
     submitSteer: (options: { sessionId: string; text: string; clientSteerId: string }) =>
       ipcRenderer.invoke(CoworkIpcChannel.SubmitSteer, options),
     runGoalCommand: (options: { sessionId: string; command: string }) =>
@@ -590,6 +601,16 @@ contextBridge.exposeInMainWorld('electron', {
       const handler = (_event: any, data: { sessionId: string; goal: any }) => callback(data);
       ipcRenderer.on(CoworkIpcChannel.StreamGoal, handler);
       return () => ipcRenderer.removeListener(CoworkIpcChannel.StreamGoal, handler);
+    },
+    onStreamBtwResult: (
+      callback: (data: { sessionId: string; result: CoworkBtwEntry }) => void,
+    ) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        data: { sessionId: string; result: CoworkBtwEntry },
+      ) => callback(data);
+      ipcRenderer.on(CoworkIpcChannel.StreamBtwResult, handler);
+      return () => ipcRenderer.removeListener(CoworkIpcChannel.StreamBtwResult, handler);
     },
     onStreamContextMaintenance: (
       callback: (data: { sessionId: string; active: boolean }) => void,

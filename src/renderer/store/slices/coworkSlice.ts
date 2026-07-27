@@ -1,6 +1,15 @@
 import { createSlice, PayloadAction } from '@reduxjs/toolkit';
 
 import type { CoworkBrowserAnnotationBatch } from '../../../shared/cowork/browserAnnotations';
+import {
+  COWORK_BTW_DRAFT_MAX_CHARS,
+  COWORK_BTW_EPHEMERAL_THREAD_LIMIT,
+  COWORK_BTW_THREAD_CONTENT_MAX_CHARS,
+  COWORK_BTW_THREAD_ENTRY_LIMIT,
+  type CoworkBtwEntry,
+  CoworkBtwStatus,
+  type CoworkBtwThread,
+} from '../../../shared/cowork/btw';
 import type { CoworkGoal } from '../../../shared/cowork/goal';
 import {
   COWORK_RAIL_TOOLTIP_PREVIEW_MAX_LENGTH,
@@ -13,6 +22,7 @@ import {
   CoworkSteerStatus,
   type CoworkSteerStatus as CoworkSteerStatusType,
 } from '../../../shared/cowork/steer';
+import { stripNullChars } from '../../../shared/cowork/text';
 import {
   CoworkCollaborationMode,
   type CoworkCollaborationMode as CoworkCollaborationModeType,
@@ -73,6 +83,8 @@ interface CoworkState {
   draftCollaborationModes: Record<string, CoworkCollaborationModeType>;
   /** Keyed by sessionId, stores the latest proposed plan confirmation UI state. */
   planConfirmations: Record<string, PlanConfirmationStatus>;
+  /** Keyed by sessionId, stores ephemeral BTW side-chat windows and messages. */
+  btwThreadsBySessionId: Record<string, CoworkBtwThread>;
   /** Keyed by sessionId, stores steer drafts separately from normal/Plan/Goal drafts. */
   steerDrafts: Record<string, string>;
   /** Keyed by sessionId, stores follow-up inputs queued while a turn is active. */
@@ -112,6 +124,7 @@ const initialState: CoworkState = {
   draftSkillIds: {},
   draftCollaborationModes: {},
   planConfirmations: {},
+  btwThreadsBySessionId: {},
   steerDrafts: {},
   pendingSteers: {},
   rejectedSteers: {},
@@ -649,8 +662,147 @@ const coworkSlice = createSlice({
       }
     },
 
+    openBtwThread(
+      state,
+      action: PayloadAction<{ sessionId: string; prefill?: string }>,
+    ) {
+      const { sessionId } = action.payload;
+      const sessionExists = state.currentSession?.id === sessionId
+        || state.sessions.some(session => session.id === sessionId);
+      if (!sessionExists) return;
+      const now = Date.now();
+      const thread = state.btwThreadsBySessionId[sessionId] ?? {
+        sessionId,
+        isOpen: true,
+        draft: '',
+        entries: [],
+        createdAt: now,
+        updatedAt: now,
+      };
+      thread.isOpen = true;
+      const prefill = stripNullChars(action.payload.prefill ?? '')
+        .trim()
+        .slice(0, COWORK_BTW_DRAFT_MAX_CHARS);
+      if (prefill) {
+        const existingDraft = thread.draft.trim();
+        thread.draft = existingDraft && existingDraft !== prefill
+          ? `${existingDraft}\n\n${prefill}`
+          : prefill;
+        thread.draft = thread.draft.slice(0, COWORK_BTW_DRAFT_MAX_CHARS);
+      }
+      thread.updatedAt = now;
+      state.btwThreadsBySessionId[sessionId] = thread;
+
+      const threads = Object.values(state.btwThreadsBySessionId);
+      if (threads.length <= COWORK_BTW_EPHEMERAL_THREAD_LIMIT) return;
+      const removableThreads = threads
+        .filter(candidate => (
+          candidate.sessionId !== sessionId
+          && !candidate.entries.some(entry => entry.status === CoworkBtwStatus.Pending)
+        ))
+        .sort((left, right) => left.updatedAt - right.updatedAt);
+      let threadsToRemove = threads.length - COWORK_BTW_EPHEMERAL_THREAD_LIMIT;
+      for (const candidate of removableThreads) {
+        if (threadsToRemove <= 0) break;
+        delete state.btwThreadsBySessionId[candidate.sessionId];
+        threadsToRemove -= 1;
+      }
+    },
+
+    closeBtwThread(state, action: PayloadAction<string>) {
+      const thread = state.btwThreadsBySessionId[action.payload];
+      if (!thread) return;
+      thread.isOpen = false;
+      thread.updatedAt = Date.now();
+    },
+
+    setBtwDraft(
+      state,
+      action: PayloadAction<{ sessionId: string; draft: string }>,
+    ) {
+      const thread = state.btwThreadsBySessionId[action.payload.sessionId];
+      if (!thread) return;
+      thread.draft = stripNullChars(action.payload.draft)
+        .slice(0, COWORK_BTW_DRAFT_MAX_CHARS);
+      thread.updatedAt = Date.now();
+    },
+
+    clearBtwDraftIfUnchanged(
+      state,
+      action: PayloadAction<{ sessionId: string; expectedDraft: string }>,
+    ) {
+      const thread = state.btwThreadsBySessionId[action.payload.sessionId];
+      if (!thread || thread.draft !== action.payload.expectedDraft) return;
+      thread.draft = '';
+      thread.updatedAt = Date.now();
+    },
+
+    appendBtwEntry(state, action: PayloadAction<CoworkBtwEntry>) {
+      const entry = action.payload;
+      const sessionExists = state.currentSession?.id === entry.sessionId
+        || state.sessions.some(session => session.id === entry.sessionId);
+      if (!sessionExists) return;
+      const now = Date.now();
+      const thread = state.btwThreadsBySessionId[entry.sessionId] ?? {
+        sessionId: entry.sessionId,
+        isOpen: true,
+        draft: '',
+        entries: [],
+        createdAt: now,
+        updatedAt: now,
+      };
+      if (!thread.entries.some(candidate => candidate.runId === entry.runId)) {
+        thread.entries.push(entry);
+      }
+      thread.isOpen = true;
+      thread.updatedAt = now;
+      state.btwThreadsBySessionId[entry.sessionId] = thread;
+    },
+
+    settleBtwEntry(
+      state,
+      action: PayloadAction<CoworkBtwEntry>,
+    ) {
+      const result = action.payload;
+      const thread = state.btwThreadsBySessionId[result.sessionId];
+      const entry = thread?.entries.find(candidate => candidate.runId === result.runId);
+      if (
+        !thread
+        || !entry
+        || entry.status !== CoworkBtwStatus.Pending
+        || result.status === CoworkBtwStatus.Pending
+      ) return;
+      entry.status = result.status;
+      entry.answer = result.answer;
+      entry.error = result.error;
+      entry.completedAt = result.completedAt ?? Date.now();
+      thread.updatedAt = entry.completedAt;
+
+      const getEntryChars = (candidate: CoworkBtwEntry): number => (
+        candidate.question.length
+        + (candidate.answer?.length ?? 0)
+        + (candidate.error?.length ?? 0)
+      );
+      let contentChars = thread.entries.reduce(
+        (total, candidate) => total + getEntryChars(candidate),
+        0,
+      );
+      while (
+        thread.entries.length > COWORK_BTW_THREAD_ENTRY_LIMIT
+        || contentChars > COWORK_BTW_THREAD_CONTENT_MAX_CHARS
+      ) {
+        const removableIndex = thread.entries.findIndex(
+          candidate => candidate.status !== CoworkBtwStatus.Pending,
+        );
+        if (removableIndex < 0) break;
+        const [removed] = thread.entries.splice(removableIndex, 1);
+        contentChars -= getEntryChars(removed);
+      }
+    },
+
     deleteSession(state, action: PayloadAction<string>) {
       removeSessionFromState(state, action.payload);
+      delete state.btwThreadsBySessionId[action.payload];
       delete state.planConfirmations[action.payload];
       delete state.steerDrafts[action.payload];
       delete state.pendingSteers[action.payload];
@@ -662,6 +814,7 @@ const coworkSlice = createSlice({
     deleteSessions(state, action: PayloadAction<string[]>) {
       removeSessionsFromState(state, action.payload);
       for (const sessionId of action.payload) {
+        delete state.btwThreadsBySessionId[sessionId];
         delete state.planConfirmations[sessionId];
         delete state.steerDrafts[sessionId];
         delete state.pendingSteers[sessionId];
@@ -1108,6 +1261,12 @@ export const {
   addSession,
   updateSessionStatus,
   updateSessionGoal,
+  openBtwThread,
+  closeBtwThread,
+  setBtwDraft,
+  clearBtwDraftIfUnchanged,
+  appendBtwEntry,
+  settleBtwEntry,
   deleteSession,
   deleteSessions,
   setMessageRailIndexLoading,

@@ -21,6 +21,12 @@ import { createPortal } from 'react-dom';
 import { useDispatch, useSelector } from 'react-redux';
 
 import {
+  COWORK_BTW_QUESTION_MAX_CHARS,
+  CoworkBtwCommandValidationError,
+  createCoworkBtwRunId,
+  parseCoworkBtwCommand,
+} from '../../../shared/cowork/btw';
+import {
   type CoworkGoal,
   CoworkGoalStatus,
   formatCoworkGoalUsage,
@@ -1253,6 +1259,66 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
 
   const handleSubmit = useCallback(async (submitMethod: 'button' | 'keyboard' | 'voice' = 'button') => {
     let effectiveSubmitMethod = submitMethod;
+    const btwCommand = !goalInputActive && !steerInputActive && !isVoiceRecording
+      ? parseCoworkBtwCommand(value)
+      : { matched: false } as const;
+    if (btwCommand.matched) {
+      if (btwCommand.error === CoworkBtwCommandValidationError.EmptyQuestion) {
+        showToast(i18nService.t('coworkBtwEmptyQuestion'));
+        return;
+      }
+      if (btwCommand.error === CoworkBtwCommandValidationError.MultilineUnsupported) {
+        showToast(i18nService.t('coworkBtwMultilineUnsupported'));
+        return;
+      }
+      if (btwCommand.error === CoworkBtwCommandValidationError.QuestionTooLong) {
+        showToast(
+          i18nService.t('coworkBtwQuestionTooLong')
+            .replace('{limit}', String(COWORK_BTW_QUESTION_MAX_CHARS)),
+        );
+        return;
+      }
+      if (!sessionId) {
+        showToast(i18nService.t('coworkBtwRequiresSession'));
+        return;
+      }
+      if (disabled || isPatchingModel) {
+        reportPromptControl('submit_blocked', {
+          blockedReason: disabled ? 'disabled' : 'model_patching',
+          submitMethod: effectiveSubmitMethod,
+          ...getPromptTextAnalyticsParams(btwCommand.question),
+        });
+        return;
+      }
+
+      const runId = createCoworkBtwRunId();
+      const accepted = await coworkService.submitBtw({
+        sessionId,
+        question: btwCommand.question,
+        runId,
+      });
+      if (!accepted) {
+        return;
+      }
+      setValue('');
+      dispatch(setDraftPrompt({ sessionId: draftKey, draft: '' }));
+      inputSourceOverrideRef.current = null;
+      reportPromptSubmit({
+        ...getPromptContextAnalyticsParams(),
+        submitMethod: effectiveSubmitMethod,
+        promptLength: btwCommand.question.length,
+        promptLineCount: 1,
+        hasPrompt: true,
+        params: {
+          inputSource: 'btw',
+          mediaReferenceCount: 0,
+          selectedTextSnippetCount: 0,
+          effectiveCollaborationMode: CoworkCollaborationMode.Default,
+        },
+      });
+      return;
+    }
+
     const shouldSubmitAsSteer = isStreaming
       && !goalInputActive
       && !!sessionId
