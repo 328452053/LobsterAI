@@ -1,5 +1,4 @@
 import {
-  ArrowsPointingOutIcon,
   ArrowUpIcon,
   StopIcon,
   XMarkIcon,
@@ -25,7 +24,10 @@ import MarkdownContent from '../MarkdownContent';
 import {
   clampCoworkBtwPanelGeometry,
   type CoworkBtwPanelGeometry,
+  CoworkBtwResizeDirection,
+  type CoworkBtwResizeDirection as CoworkBtwResizeDirectionType,
   getInitialCoworkBtwPanelGeometry,
+  resizeCoworkBtwPanelGeometry,
 } from './coworkBtwPanelGeometry';
 
 interface CoworkBtwFloatingPanelProps {
@@ -44,6 +46,48 @@ interface PointerOperation {
   startGeometry: CoworkBtwPanelGeometry;
 }
 
+interface ResizePointerOperation extends PointerOperation {
+  direction: CoworkBtwResizeDirectionType;
+}
+
+const COWORK_BTW_RESIZE_HANDLES: ReadonlyArray<{
+  direction: CoworkBtwResizeDirectionType;
+  className: string;
+}> = [
+  {
+    direction: CoworkBtwResizeDirection.Top,
+    className: '-top-1 left-3 right-3 h-2 cursor-ns-resize',
+  },
+  {
+    direction: CoworkBtwResizeDirection.TopRight,
+    className: '-right-1 -top-1 h-3 w-3 cursor-nesw-resize',
+  },
+  {
+    direction: CoworkBtwResizeDirection.Right,
+    className: '-right-1 bottom-3 top-3 w-2 cursor-ew-resize',
+  },
+  {
+    direction: CoworkBtwResizeDirection.BottomRight,
+    className: '-bottom-1 -right-1 h-3 w-3 cursor-nwse-resize',
+  },
+  {
+    direction: CoworkBtwResizeDirection.Bottom,
+    className: '-bottom-1 left-3 right-3 h-2 cursor-ns-resize',
+  },
+  {
+    direction: CoworkBtwResizeDirection.BottomLeft,
+    className: '-bottom-1 -left-1 h-3 w-3 cursor-nesw-resize',
+  },
+  {
+    direction: CoworkBtwResizeDirection.Left,
+    className: '-left-1 bottom-3 top-3 w-2 cursor-ew-resize',
+  },
+  {
+    direction: CoworkBtwResizeDirection.TopLeft,
+    className: '-left-1 -top-1 h-3 w-3 cursor-nwse-resize',
+  },
+];
+
 const getViewport = () => ({
   width: window.innerWidth,
   height: window.innerHeight,
@@ -56,7 +100,7 @@ const logPanelGeometry = (
   try {
     window.electron?.log?.fromRenderer?.(
       'debug',
-      'CoworkBtwFloatingPanel',
+      'CoworkBtw',
       `${action} side-chat window; x=${Math.round(geometry.x)}; y=${Math.round(geometry.y)}; `
       + `width=${Math.round(geometry.width)}; height=${Math.round(geometry.height)}.`,
     );
@@ -81,7 +125,7 @@ const CoworkBtwFloatingPanel: React.FC<CoworkBtwFloatingPanelProps> = ({
   const geometryRef = useRef(geometry);
   geometryRef.current = geometry;
   const dragRef = useRef<PointerOperation | null>(null);
-  const resizeRef = useRef<PointerOperation | null>(null);
+  const resizeRef = useRef<ResizePointerOperation | null>(null);
   const messageListRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const pendingEntry = useMemo(
@@ -155,7 +199,8 @@ const CoworkBtwFloatingPanel: React.FC<CoworkBtwFloatingPanelProps> = ({
   }, []);
 
   const handleResizePointerDown = useCallback((
-    event: React.PointerEvent<HTMLButtonElement>,
+    event: React.PointerEvent<HTMLDivElement>,
+    direction: CoworkBtwResizeDirectionType,
   ) => {
     if (event.button !== 0) return;
     resizeRef.current = {
@@ -163,6 +208,7 @@ const CoworkBtwFloatingPanel: React.FC<CoworkBtwFloatingPanelProps> = ({
       startClientX: event.clientX,
       startClientY: event.clientY,
       startGeometry: geometry,
+      direction,
     };
     event.currentTarget.setPointerCapture(event.pointerId);
     event.preventDefault();
@@ -170,19 +216,21 @@ const CoworkBtwFloatingPanel: React.FC<CoworkBtwFloatingPanelProps> = ({
   }, [geometry]);
 
   const handleResizePointerMove = useCallback((
-    event: React.PointerEvent<HTMLButtonElement>,
+    event: React.PointerEvent<HTMLDivElement>,
   ) => {
     const operation = resizeRef.current;
     if (!operation || operation.pointerId !== event.pointerId) return;
-    setGeometry(clampCoworkBtwPanelGeometry({
-      ...operation.startGeometry,
-      width: operation.startGeometry.width + event.clientX - operation.startClientX,
-      height: operation.startGeometry.height + event.clientY - operation.startClientY,
-    }, getViewport()));
+    setGeometry(resizeCoworkBtwPanelGeometry(
+      operation.startGeometry,
+      event.clientX - operation.startClientX,
+      event.clientY - operation.startClientY,
+      operation.direction,
+      getViewport(),
+    ));
   }, []);
 
   const handleResizePointerEnd = useCallback((
-    event: React.PointerEvent<HTMLButtonElement>,
+    event: React.PointerEvent<HTMLDivElement>,
   ) => {
     if (resizeRef.current?.pointerId !== event.pointerId) return;
     resizeRef.current = null;
@@ -201,7 +249,7 @@ const CoworkBtwFloatingPanel: React.FC<CoworkBtwFloatingPanelProps> = ({
       data-cowork-btw-floating-panel
       role="dialog"
       aria-label={i18nService.t('coworkBtwWindowTitle')}
-      className="non-draggable fixed z-40 flex overflow-hidden rounded-xl border border-border bg-surface shadow-2xl"
+      className="non-draggable fixed z-40 flex rounded-xl border border-border bg-surface shadow-2xl"
       style={{
         left: geometry.x,
         top: geometry.y,
@@ -209,7 +257,7 @@ const CoworkBtwFloatingPanel: React.FC<CoworkBtwFloatingPanelProps> = ({
         height: geometry.height,
       }}
     >
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-[inherit]">
         <div
           data-cowork-btw-drag-handle
           onPointerDown={handleDragPointerDown}
@@ -347,19 +395,18 @@ const CoworkBtwFloatingPanel: React.FC<CoworkBtwFloatingPanelProps> = ({
         </div>
       </div>
 
-      <button
-        type="button"
-        data-cowork-btw-resize-handle
-        onPointerDown={handleResizePointerDown}
-        onPointerMove={handleResizePointerMove}
-        onPointerUp={handleResizePointerEnd}
-        onPointerCancel={handleResizePointerEnd}
-        className="absolute bottom-0 right-0 flex h-5 w-5 touch-none items-end justify-end p-0.5 text-muted cursor-nwse-resize"
-        title={i18nService.t('coworkBtwResizeWindow')}
-        aria-label={i18nService.t('coworkBtwResizeWindow')}
-      >
-        <ArrowsPointingOutIcon className="h-3 w-3 rotate-90" />
-      </button>
+      {COWORK_BTW_RESIZE_HANDLES.map(handle => (
+        <div
+          key={handle.direction}
+          data-cowork-btw-resize-handle={handle.direction}
+          onPointerDown={event => handleResizePointerDown(event, handle.direction)}
+          onPointerMove={handleResizePointerMove}
+          onPointerUp={handleResizePointerEnd}
+          onPointerCancel={handleResizePointerEnd}
+          className={`absolute z-20 touch-none ${handle.className}`}
+          aria-hidden="true"
+        />
+      ))}
     </section>,
     document.body,
   );

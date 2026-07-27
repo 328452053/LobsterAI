@@ -415,6 +415,26 @@ const toSessionSummary = (session: CoworkSession): CoworkSessionSummary => ({
   updatedAt: session.updatedAt,
 });
 
+const pruneCoworkBtwThreads = (
+  state: Pick<CoworkState, 'btwThreadsBySessionId'>,
+  protectedSessionId?: string,
+): void => {
+  const threads = Object.values(state.btwThreadsBySessionId);
+  if (threads.length <= COWORK_BTW_EPHEMERAL_THREAD_LIMIT) return;
+  const removableThreads = threads
+    .filter(candidate => (
+      candidate.sessionId !== protectedSessionId
+      && !candidate.entries.some(entry => entry.status === CoworkBtwStatus.Pending)
+    ))
+    .sort((left, right) => left.updatedAt - right.updatedAt);
+  let threadsToRemove = threads.length - COWORK_BTW_EPHEMERAL_THREAD_LIMIT;
+  for (const candidate of removableThreads) {
+    if (threadsToRemove <= 0) break;
+    delete state.btwThreadsBySessionId[candidate.sessionId];
+    threadsToRemove -= 1;
+  }
+};
+
 const coworkSlice = createSlice({
   name: 'cowork',
   initialState,
@@ -684,29 +704,11 @@ const coworkSlice = createSlice({
         .trim()
         .slice(0, COWORK_BTW_DRAFT_MAX_CHARS);
       if (prefill) {
-        const existingDraft = thread.draft.trim();
-        thread.draft = existingDraft && existingDraft !== prefill
-          ? `${existingDraft}\n\n${prefill}`
-          : prefill;
-        thread.draft = thread.draft.slice(0, COWORK_BTW_DRAFT_MAX_CHARS);
+        thread.draft = prefill;
       }
       thread.updatedAt = now;
       state.btwThreadsBySessionId[sessionId] = thread;
-
-      const threads = Object.values(state.btwThreadsBySessionId);
-      if (threads.length <= COWORK_BTW_EPHEMERAL_THREAD_LIMIT) return;
-      const removableThreads = threads
-        .filter(candidate => (
-          candidate.sessionId !== sessionId
-          && !candidate.entries.some(entry => entry.status === CoworkBtwStatus.Pending)
-        ))
-        .sort((left, right) => left.updatedAt - right.updatedAt);
-      let threadsToRemove = threads.length - COWORK_BTW_EPHEMERAL_THREAD_LIMIT;
-      for (const candidate of removableThreads) {
-        if (threadsToRemove <= 0) break;
-        delete state.btwThreadsBySessionId[candidate.sessionId];
-        threadsToRemove -= 1;
-      }
+      pruneCoworkBtwThreads(state, sessionId);
     },
 
     closeBtwThread(state, action: PayloadAction<string>) {
@@ -798,6 +800,7 @@ const coworkSlice = createSlice({
         const [removed] = thread.entries.splice(removableIndex, 1);
         contentChars -= getEntryChars(removed);
       }
+      pruneCoworkBtwThreads(state, result.sessionId);
     },
 
     deleteSession(state, action: PayloadAction<string>) {

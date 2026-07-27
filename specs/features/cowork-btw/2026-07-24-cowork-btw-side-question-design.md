@@ -128,8 +128,8 @@ when submitted from the normal composer.
 - Selecting assistant text shows an `Ask in side chat` action next to the
   existing `Add to chat` action. It opens the floating window and places the
   selected excerpt in its input without sending. The user can edit it, add a
-  question, and submit explicitly. Existing side-chat draft text is preserved
-  by appending a new selection instead of overwriting it.
+  question, and submit explicitly. Opening from a new selection replaces any
+  unsent draft left by a previous selection instead of stacking excerpts.
 
 The slash-command composer follows the pinned runtime's single-line command
 grammar and rejects multiline command input instead of falling through to
@@ -147,8 +147,9 @@ the normal message-list persistence model.
 
 - Its default geometry is a 440 × 520 rectangular window, inset 16 pixels from
   the application viewport's bottom-right corner.
-- The title bar is a pointer drag handle. The bottom-right handle resizes the
-  window.
+- The title bar is a pointer drag handle. Invisible hit regions on all four
+  edges and all four corners resize the window without a permanent resize
+  icon.
 - The entire floating window is an Electron `no-drag` region. Its title bar
   uses renderer pointer events for panel movement, so overlapping an
   application title-bar drag region does not move the native application
@@ -169,7 +170,8 @@ the normal message-list persistence model.
   `sessionKey` and `runId`, records an ephemeral `stopped` result, and never
   calls the Cowork main-task `stopSession` path.
 - Closing hides the window but keeps its draft and exchanges in renderer
-  memory. Reopening the session window restores them until reload or restart.
+  memory. Reopening without a new selection restores the draft until reload or
+  restart; opening from selected text replaces it with the new selection.
 
 Each session owns one temporary side-chat thread with multiple exchanges. Only
 one request per session may be pending. The user can send another question
@@ -362,7 +364,9 @@ events are logged and dropped.
 
 BTW UI state exists only in renderer/runtime memory. It is cleared on reload,
 restart, session delete, and bounded lifecycle cleanup. Hiding the floating
-window does not delete the current renderer-lifetime thread.
+window does not delete the current renderer-lifetime thread. Thread-limit
+cleanup is reevaluated when a pending request settles, while pending threads
+and the newly settled thread remain protected.
 
 ### INV-5: Security Policy Is Runtime-Owned
 

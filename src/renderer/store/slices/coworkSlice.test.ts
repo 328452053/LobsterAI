@@ -301,7 +301,24 @@ test('keeps editable BTW side-chat threads ephemeral and session-scoped', () => 
     entries: [],
   });
 
-  const pending = coworkReducer(opened, appendBtwEntry({
+  const editedBeforeClose = coworkReducer(opened, setBtwDraft({
+    sessionId: session.id,
+    draft: 'Unsent edited draft',
+  }));
+  const reopenedWithoutSelection = coworkReducer(
+    coworkReducer(editedBeforeClose, closeBtwThread(session.id)),
+    openBtwThread({ sessionId: session.id }),
+  );
+  expect(reopenedWithoutSelection.btwThreadsBySessionId[session.id]?.draft)
+    .toBe('Unsent edited draft');
+  const reopenedFromSelection = coworkReducer(reopenedWithoutSelection, openBtwThread({
+    sessionId: session.id,
+    prefill: 'New selected text',
+  }));
+  expect(reopenedFromSelection.btwThreadsBySessionId[session.id]?.draft)
+    .toBe('New selected text');
+
+  const pending = coworkReducer(reopenedFromSelection, appendBtwEntry({
     runId: 'btw-1',
     sessionId: session.id,
     question: 'What changed?',
@@ -433,6 +450,41 @@ test('bounds closed ephemeral BTW threads across sessions', () => {
     .toHaveLength(COWORK_BTW_EPHEMERAL_THREAD_LIMIT);
   expect(state.btwThreadsBySessionId['session-0']).toBeUndefined();
   expect(state.btwThreadsBySessionId[`session-${COWORK_BTW_EPHEMERAL_THREAD_LIMIT}`])
+    .toBeDefined();
+});
+
+test('prunes excess ephemeral threads as pending requests settle', () => {
+  const sessions = Array.from(
+    { length: COWORK_BTW_EPHEMERAL_THREAD_LIMIT + 2 },
+    (_, index) => makeSession({ id: `session-${index}` }),
+  );
+  let state = coworkReducer(undefined, setSessions(sessions));
+  for (const [index, session] of sessions.entries()) {
+    state = coworkReducer(state, appendBtwEntry({
+      runId: `btw-${index}`,
+      sessionId: session.id,
+      question: `Question ${index}`,
+      status: CoworkBtwStatus.Pending,
+      createdAt: index,
+    }));
+  }
+  expect(Object.keys(state.btwThreadsBySessionId)).toHaveLength(sessions.length);
+
+  for (const [index, session] of sessions.entries()) {
+    state = coworkReducer(state, settleBtwEntry({
+      runId: `btw-${index}`,
+      sessionId: session.id,
+      question: `Wire question ${index}`,
+      status: CoworkBtwStatus.Answered,
+      answer: `Answer ${index}`,
+      createdAt: index,
+      completedAt: index + 1,
+    }));
+  }
+
+  expect(Object.keys(state.btwThreadsBySessionId))
+    .toHaveLength(COWORK_BTW_EPHEMERAL_THREAD_LIMIT);
+  expect(state.btwThreadsBySessionId[`session-${sessions.length - 1}`])
     .toBeDefined();
 });
 
