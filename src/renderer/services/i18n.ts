@@ -1732,6 +1732,7 @@ const translations: Record<LanguageType, Record<string, string>> = {
     coworkErrorServerError: '服务端出现错误，请稍后重试。',
     coworkErrorSessionStartFailed: '会话启动失败：{error}',
     coworkErrorSessionContinueFailed: '发送消息失败：{error}',
+    coworkStopFailed: '未能确认任务已停止，请稍后重试。',
     coworkModelSwitchFailed: '模型切换失败，请稍后重试。',
     coworkErrorEngineNotReady: 'AI 引擎正在启动中，请稍等几秒后重试。',
     coworkErrorUnknown: '任务执行出错，请重试。如果问题持续出现，请检查模型配置。',
@@ -5049,6 +5050,7 @@ const translations: Record<LanguageType, Record<string, string>> = {
     coworkErrorServerError: 'Server error occurred. Please try again later.',
     coworkErrorSessionStartFailed: 'Failed to start session: {error}',
     coworkErrorSessionContinueFailed: 'Failed to send message: {error}',
+    coworkStopFailed: 'Could not confirm that the task stopped. Please try again.',
     coworkModelSwitchFailed: 'Failed to switch model. Please try again later.',
     coworkErrorEngineNotReady: 'AI engine is starting up. Please wait a few seconds and try again.',
     coworkErrorUnknown:

@@ -49,12 +49,29 @@ const translations: Record<LanguageType, Record<string, string>> = {
     // Timeout hint
     taskTimedOut: '[任务超时] 任务因超过最大允许时长而被自动停止。你可以继续对话以从中断处继续。',
     imSessionStoppedReply: '任务已被手动停止。你可以继续发送消息开始新的对话。',
+    runSafetyVariantNoProgress:
+      '检测到任务连续执行相似操作但没有获得新结果，已自动停止以避免继续产生无效的模型调用和费用。请补充说明后重试。',
+    runSafetyToolBudget:
+      '本次任务的工具调用次数已达到本地安全上限，已自动停止。请检查当前结果，并通过一条新指令继续。',
+    runSafetyProviderDispatchBudget:
+      '本次任务的模型请求次数已达到本地安全上限，已自动停止。请检查当前结果，并通过一条新指令继续。',
+    runSafetyPromptExposureBudget:
+      '本次任务的累计上下文暴露量已达到本地安全上限，已自动停止。请检查当前结果，并通过一条新指令继续。',
+    runSafetyPromptEstimateUnavailable:
+      '本地无法可靠估算本次请求的上下文暴露量，已在下一次模型请求前停止。请检查输入或模型配置后，通过一条新指令重试。',
+    runSafetyBudgetIdentityMissing:
+      '本地未能可靠建立本次任务的安全预算标识，已在调用模型前停止。请通过一条新指令重试。',
+    runSafetyStateUnavailable:
+      '本地安全状态暂时不可用，已在调用模型前停止。请稍后通过一条新指令重试。',
 
     // Thinking-only hint
     taskThinkingOnly:
       '[模型未输出内容] 模型已完成思考但未生成可见回复。你可以继续对话，让模型重新输出结果。',
     taskOutputTruncated:
       '[输出未完成] 模型已达到本次输出长度上限。部分结果已保留，但任务未确认完成；你可以继续对话以从中断处继续。',
+    taskPlanIncomplete: '计划未完整生成，已保留当前结果。请发送一条新指令继续补充计划。',
+    taskPlanMutationBlocked:
+      '计划模式已阻止可能修改环境的操作并停止当前任务。已保留当前结果，请发送一条新指令继续。',
 
     // Feishu bot install
     feishuVerifyCredentialsFailed: '凭证验证失败，请检查 App ID 和 App Secret 是否正确',
@@ -75,9 +92,12 @@ const translations: Record<LanguageType, Record<string, string>> = {
       '本次消息过大，请减少附件、压缩图片或拆分提交。（单次整体需小于 30MB）',
     coworkErrorCouldNotProcessPdf: '无法处理 PDF 文件。',
     coworkErrorModelNotFound: '请求的模型不存在或不可用。',
-    coworkGatewaySessionSyncTimeout: 'OpenClaw 引擎响应缓慢，消息尚未发送。请等待 1~2 分钟后重新发送；若频繁出现，请检查系统内存与磁盘占用，并将 LobsterAI 加入杀毒软件白名单。',
-    coworkErrorTranscriptOversized: '该任务的历史记录过大。为保护 AI 引擎，本次消息未发送；请新建任务继续，原任务记录仍会保留。',
-    coworkErrorGatewayHeapOutOfMemory: '本地 AI 引擎内存不足并已自动重启。当前任务可能过大，请等待恢复后在新任务中继续。',
+    coworkGatewaySessionSyncTimeout:
+      'OpenClaw 引擎响应缓慢，消息尚未发送。请等待 1~2 分钟后重新发送；若频繁出现，请检查系统内存与磁盘占用，并将 LobsterAI 加入杀毒软件白名单。',
+    coworkErrorTranscriptOversized:
+      '该任务的历史记录过大。为保护 AI 引擎，本次消息未发送；请新建任务继续，原任务记录仍会保留。',
+    coworkErrorGatewayHeapOutOfMemory:
+      '本地 AI 引擎内存不足并已自动重启。当前任务可能过大，请等待恢复后在新任务中继续。',
     coworkErrorGatewayDisconnected: 'AI 引擎连接中断，请重试。',
     coworkErrorServiceRestart: 'AI 引擎正在重启，请稍后重试。',
     coworkErrorGatewayDraining: 'AI 引擎正在重启中，请稍等片刻后重试。',
@@ -321,8 +341,10 @@ const translations: Record<LanguageType, Record<string, string>> = {
     taskCompletionNotificationBody: 'A task has finished. Click to view the result.',
     taskCompletionOverlayDescription: 'Task complete',
     permissionNotificationTitle: 'Waiting for Your Confirmation',
-    permissionNotificationBody: 'The agent requests to run {toolName} and is waiting for your confirmation.',
-    permissionNotificationBodyGeneric: 'The agent requests to run an action and is waiting for your confirmation.',
+    permissionNotificationBody:
+      'The agent requests to run {toolName} and is waiting for your confirmation.',
+    permissionNotificationBodyGeneric:
+      'The agent requests to run an action and is waiting for your confirmation.',
     questionNotificationTitle: 'Waiting for Your Answer',
     questionNotificationBody: 'Waiting for your answer to continue.',
 
@@ -345,6 +367,20 @@ const translations: Record<LanguageType, Record<string, string>> = {
       '[Task timed out] The task was automatically stopped because it exceeded the maximum allowed duration. You can continue the conversation to pick up where it left off.',
     imSessionStoppedReply:
       'The task was manually stopped. You can send a new message to start a fresh conversation.',
+    runSafetyVariantNoProgress:
+      'The task repeatedly performed similar operations without producing a new result, so it was stopped to avoid further ineffective model calls and cost. Add more guidance and try again.',
+    runSafetyToolBudget:
+      'This task reached the local safety limit for tool calls and was stopped. Review the current result, then send a new instruction to continue.',
+    runSafetyProviderDispatchBudget:
+      'This task reached the local safety limit for model requests and was stopped. Review the current result, then send a new instruction to continue.',
+    runSafetyPromptExposureBudget:
+      'This task reached the local safety limit for cumulative context exposure and was stopped. Review the current result, then send a new instruction to continue.',
+    runSafetyPromptEstimateUnavailable:
+      'The local runtime could not reliably estimate this request’s context exposure, so it stopped before the next model request. Check the input or model configuration, then retry with a new instruction.',
+    runSafetyBudgetIdentityMissing:
+      'The local runtime could not reliably establish this task’s safety-budget identity, so it stopped before calling the model. Retry with a new instruction.',
+    runSafetyStateUnavailable:
+      'The local safety state is temporarily unavailable, so the task stopped before calling the model. Retry later with a new instruction.',
 
     // OAuth flow messages
     qwenOAuthRequestingDeviceCode: 'Requesting device authorization code...',
@@ -358,6 +394,10 @@ const translations: Record<LanguageType, Record<string, string>> = {
       '[No output] The model finished thinking but did not generate a visible reply. You can continue the conversation to ask it to output the result.',
     taskOutputTruncated:
       '[Output incomplete] The model reached the output limit for this response. The partial result was preserved, but the task is not confirmed complete. Continue the conversation to resume.',
+    taskPlanIncomplete:
+      'The plan was not completed, and the current result was preserved. Send a new instruction to continue the plan.',
+    taskPlanMutationBlocked:
+      'Plan mode blocked an operation that could modify the environment and stopped this task. The current result was preserved; send a new instruction to continue.',
 
     // Feishu bot install
     feishuVerifyCredentialsFailed:
@@ -368,8 +408,10 @@ const translations: Record<LanguageType, Record<string, string>> = {
     coworkErrorAuthInvalid: 'Invalid or expired API key. Please check your configuration.',
     coworkErrorLobsterAILoginExpired:
       'Your login session has expired. Sign in again to continue using LobsterAI plan models.',
-    coworkErrorOAuthInvalid: 'OAuth authorization is invalid or missing required access. Re-authenticate and try again.',
-    coworkErrorModelAccessDenied: 'This account is not allowed to access the selected model. Switch models or check provider account permissions.',
+    coworkErrorOAuthInvalid:
+      'OAuth authorization is invalid or missing required access. Re-authenticate and try again.',
+    coworkErrorModelAccessDenied:
+      'This account is not allowed to access the selected model. Switch models or check provider account permissions.',
     coworkErrorQuotaExhausted:
       'Your credits have been used up. Upgrade your plan to continue.\n\n[Upgrade or recharge](https://lobsterai.youdao.com/portal#/pricing)',
     coworkErrorFreeQuotaExhausted:
@@ -380,9 +422,12 @@ const translations: Record<LanguageType, Record<string, string>> = {
       'This message is too large. Reduce attachments, compress images, or split it up. (Keep each message under about 30 MB.)',
     coworkErrorCouldNotProcessPdf: 'Unable to process the PDF file.',
     coworkErrorModelNotFound: 'The requested model does not exist or is unavailable.',
-    coworkGatewaySessionSyncTimeout: 'The OpenClaw engine is responding slowly and your message has not been sent. Please wait a minute or two and resend. If this happens frequently, check system memory and disk usage, and add LobsterAI to your antivirus allowlist.',
-    coworkErrorTranscriptOversized: 'This task history is too large. The message was not sent to protect the AI engine. Continue in a new task; the original task will be preserved.',
-    coworkErrorGatewayHeapOutOfMemory: 'The local AI engine ran out of memory and is restarting automatically. This task may be too large; wait for recovery and continue in a new task.',
+    coworkGatewaySessionSyncTimeout:
+      'The OpenClaw engine is responding slowly and your message has not been sent. Please wait a minute or two and resend. If this happens frequently, check system memory and disk usage, and add LobsterAI to your antivirus allowlist.',
+    coworkErrorTranscriptOversized:
+      'This task history is too large. The message was not sent to protect the AI engine. Continue in a new task; the original task will be preserved.',
+    coworkErrorGatewayHeapOutOfMemory:
+      'The local AI engine ran out of memory and is restarting automatically. This task may be too large; wait for recovery and continue in a new task.',
     coworkErrorGatewayDisconnected: 'AI engine connection lost. Please retry.',
     coworkErrorServiceRestart: 'AI engine is restarting. Please try again later.',
     coworkErrorGatewayDraining: 'AI engine is restarting. Please wait a moment and try again.',
