@@ -67,6 +67,8 @@ const translations: Record<LanguageType, Record<string, string>> = {
     // Thinking-only hint
     taskThinkingOnly:
       '[模型未输出内容] 模型已完成思考但未生成可见回复。你可以继续对话，让模型重新输出结果。',
+    taskOutputTruncated:
+      '[输出未完成] 模型已达到本次输出长度上限。部分结果已保留，但任务未确认完成；你可以继续对话以从中断处继续。',
     taskPlanIncomplete: '计划未完整生成，已保留当前结果。请发送一条新指令继续补充计划。',
     taskPlanMutationBlocked:
       '计划模式已阻止可能修改环境的操作并停止当前任务。已保留当前结果，请发送一条新指令继续。',
@@ -77,6 +79,7 @@ const translations: Record<LanguageType, Record<string, string>> = {
 
     // Cowork error messages (shared with renderer via classifyErrorKey)
     coworkErrorAuthInvalid: 'API 密钥无效或已过期，请检查配置。',
+    coworkErrorLobsterAILoginExpired: '登录状态已过期，请重新登录后继续使用 LobsterAI 套餐模型。',
     coworkErrorOAuthInvalid: 'OAuth 授权已失效或权限不足，请重新授权后重试。',
     coworkErrorModelAccessDenied: '当前账号无权访问该模型，请切换模型或检查服务商账号权限。',
     coworkErrorQuotaExhausted:
@@ -98,11 +101,16 @@ const translations: Record<LanguageType, Record<string, string>> = {
     coworkErrorGatewayDisconnected: 'AI 引擎连接中断，请重试。',
     coworkErrorServiceRestart: 'AI 引擎正在重启，请稍后重试。',
     coworkErrorGatewayDraining: 'AI 引擎正在重启中，请稍等片刻后重试。',
+    coworkErrorModelResponseTimeout: '模型响应超时，请稍后重试。',
     coworkErrorNetworkError: '网络连接失败，请检查网络设置。',
     coworkErrorRateLimit: '请求过于频繁，请稍后再试。',
     coworkErrorContentFiltered: '内容未通过安全审核，请修改后重试。',
     coworkErrorServerError: '服务端出现错误，请稍后重试。',
     coworkErrorEngineNotReady: 'AI 引擎正在启动中，请稍等几秒后重试。',
+    serverModelMetadataUnavailable: '套餐模型信息暂不可用，请刷新后重试。',
+    serverModelRuntimeProfileUnsupported: '该套餐模型的任务兼容配置不受当前版本支持。',
+    serverModelToolCallingUnavailable: '该模型尚未开放任务工具调用。',
+    serverModelAgenticNotReady: '该模型正在进行任务能力验证，请稍后再试。',
     coworkErrorModelStreamEmptySseData:
       '模型流式响应格式异常：模型服务返回了空的 SSE data 帧。请稍后重试，或检查当前模型代理配置。',
     coworkErrorModelStreamOnlyEmptySseData:
@@ -384,6 +392,8 @@ const translations: Record<LanguageType, Record<string, string>> = {
     // Thinking-only hint
     taskThinkingOnly:
       '[No output] The model finished thinking but did not generate a visible reply. You can continue the conversation to ask it to output the result.',
+    taskOutputTruncated:
+      '[Output incomplete] The model reached the output limit for this response. The partial result was preserved, but the task is not confirmed complete. Continue the conversation to resume.',
     taskPlanIncomplete:
       'The plan was not completed, and the current result was preserved. Send a new instruction to continue the plan.',
     taskPlanMutationBlocked:
@@ -396,6 +406,8 @@ const translations: Record<LanguageType, Record<string, string>> = {
 
     // Cowork error messages
     coworkErrorAuthInvalid: 'Invalid or expired API key. Please check your configuration.',
+    coworkErrorLobsterAILoginExpired:
+      'Your login session has expired. Sign in again to continue using LobsterAI plan models.',
     coworkErrorOAuthInvalid:
       'OAuth authorization is invalid or missing required access. Re-authenticate and try again.',
     coworkErrorModelAccessDenied:
@@ -419,12 +431,21 @@ const translations: Record<LanguageType, Record<string, string>> = {
     coworkErrorGatewayDisconnected: 'AI engine connection lost. Please retry.',
     coworkErrorServiceRestart: 'AI engine is restarting. Please try again later.',
     coworkErrorGatewayDraining: 'AI engine is restarting. Please wait a moment and try again.',
+    coworkErrorModelResponseTimeout: 'The model response timed out. Please try again.',
     coworkErrorNetworkError: 'Network connection failed. Please check your network settings.',
     coworkErrorRateLimit: 'Too many requests. Please try again later.',
     coworkErrorContentFiltered:
       'Content did not pass the safety review. Please modify and try again.',
     coworkErrorServerError: 'Server error occurred. Please try again later.',
     coworkErrorEngineNotReady: 'AI engine is starting up. Please wait a few seconds and try again.',
+    serverModelMetadataUnavailable:
+      'Package model information is temporarily unavailable. Refresh and try again.',
+    serverModelRuntimeProfileUnsupported:
+      'This package model task profile is not supported by the current version.',
+    serverModelToolCallingUnavailable:
+      'Agent tool calling is not enabled for this model yet.',
+    serverModelAgenticNotReady:
+      'This model is still undergoing agent capability validation. Please try again later.',
     coworkErrorModelStreamEmptySseData:
       'Model stream format error: the model service returned an empty SSE data frame. Please retry later or check the current model proxy configuration.',
     coworkErrorModelStreamOnlyEmptySseData:

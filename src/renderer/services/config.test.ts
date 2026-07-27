@@ -1,4 +1,4 @@
-import { ProviderName } from '@shared/providers';
+import { ModelCompatibilityMode, ProviderName } from '@shared/providers';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 
 import { type AppConfig, CONFIG_KEYS, defaultConfig, FontPreferences, ShortcutAction } from '../config';
@@ -163,6 +163,29 @@ afterEach(() => {
   vi.resetModules();
   vi.doUnmock('./store');
   delete (globalThis as { window?: unknown }).window;
+});
+
+describe('configService theme persistence', () => {
+  test('preserves an exact default theme id across partial updates', async () => {
+    const storedConfig: AppConfig = {
+      ...defaultConfig,
+      theme: 'dark',
+      themeId: 'ocean',
+    };
+    const { configService, storeData } = await loadConfigServiceWithStoredConfig(storedConfig);
+
+    await configService.init();
+    await configService.updateConfig({ useSystemProxy: true });
+
+    expect(configService.getConfig()).toMatchObject({
+      theme: 'dark',
+      themeId: 'ocean',
+    });
+    expect(storeData[CONFIG_KEYS.APP_CONFIG]).toMatchObject({
+      theme: 'dark',
+      themeId: 'ocean',
+    });
+  });
 });
 
 describe('configService shortcut migrations', () => {
@@ -347,6 +370,177 @@ describe('configService provider migrations', () => {
       supportsThinking: true,
       customParams: { enable_thinking: true },
     });
+  });
+
+  test('applies the Moonshot v2 Kimi K3 migration once', async () => {
+    const storedConfig: AppConfig = {
+      ...defaultConfig,
+      providerModelMigrationVersions: {
+        [ProviderName.Moonshot]: 1,
+      },
+      providers: {
+        ...defaultConfig.providers,
+        [ProviderName.Moonshot]: {
+          ...defaultConfig.providers![ProviderName.Moonshot],
+          enabled: true,
+          apiKey: 'sk-moonshot',
+          models: defaultConfig.providers![ProviderName.Moonshot].models?.filter(
+            model => model.id !== 'kimi-k3',
+          ),
+        },
+      },
+    };
+    const { configService, storeData } = await loadConfigServiceWithStoredConfig(storedConfig);
+
+    await configService.init();
+
+    const savedConfig = storeData[CONFIG_KEYS.APP_CONFIG] as AppConfig;
+    expect(savedConfig.providers?.[ProviderName.Moonshot].models?.[0]).toEqual({
+      id: 'kimi-k3',
+      name: 'Kimi K3',
+      supportsImage: true,
+      supportsVideo: true,
+      supportsThinking: true,
+      contextWindow: 1_048_576,
+      maxTokens: 8_192,
+    });
+    expect(savedConfig.providerModelMigrationVersions?.[ProviderName.Moonshot]).toBe(2);
+  });
+
+  test('keeps an equivalent user Kimi K3 model without adding a duplicate', async () => {
+    const storedConfig: AppConfig = {
+      ...defaultConfig,
+      providerModelMigrationVersions: {
+        [ProviderName.Moonshot]: 1,
+      },
+      providers: {
+        ...defaultConfig.providers,
+        [ProviderName.Moonshot]: {
+          ...defaultConfig.providers![ProviderName.Moonshot],
+          enabled: true,
+          apiKey: 'sk-moonshot',
+          models: [
+            {
+              id: 'Kimi_K3',
+              name: 'My Kimi K3',
+              supportsImage: false,
+              customParams: { service_tier: 'priority' },
+            },
+            { id: 'kimi-k2.6', name: 'Kimi K2.6', supportsImage: true },
+          ],
+        },
+      },
+    };
+    const { configService, storeData } = await loadConfigServiceWithStoredConfig(storedConfig);
+
+    await configService.init();
+
+    const savedConfig = storeData[CONFIG_KEYS.APP_CONFIG] as AppConfig;
+    const models = savedConfig.providers?.[ProviderName.Moonshot].models ?? [];
+    expect(models.filter(
+      model => model.id.toLowerCase().replace(/[^a-z0-9]/g, '') === 'kimik3',
+    )).toEqual([
+      {
+        id: 'Kimi_K3',
+        name: 'My Kimi K3',
+        supportsImage: true,
+        supportsVideo: true,
+        supportsThinking: true,
+        contextWindow: 1_048_576,
+        maxTokens: 8_192,
+        customParams: { service_tier: 'priority' },
+      },
+    ]);
+    expect(savedConfig.providerModelMigrationVersions?.[ProviderName.Moonshot]).toBe(2);
+  });
+
+  test('repairs stale official Kimi K3 capability values after migration', async () => {
+    const storedConfig: AppConfig = {
+      ...defaultConfig,
+      providerModelMigrationVersions: {
+        [ProviderName.Moonshot]: 2,
+      },
+      providers: {
+        ...defaultConfig.providers,
+        [ProviderName.Moonshot]: {
+          ...defaultConfig.providers![ProviderName.Moonshot],
+          enabled: true,
+          apiKey: 'sk-moonshot',
+          models: [
+            {
+              id: 'kimi-k3',
+              name: 'Kimi K3',
+              supportsImage: false,
+              supportsVideo: false,
+              supportsThinking: false,
+              contextWindow: 128_000,
+              maxTokens: 4_096,
+            },
+          ],
+        },
+      },
+    };
+    const { configService, storeData } = await loadConfigServiceWithStoredConfig(storedConfig);
+
+    await configService.init();
+
+    const model = (storeData[CONFIG_KEYS.APP_CONFIG] as AppConfig)
+      .providers?.[ProviderName.Moonshot].models?.[0];
+    expect(model).toMatchObject({
+      id: 'kimi-k3',
+      supportsImage: true,
+      supportsVideo: true,
+      supportsThinking: true,
+      contextWindow: 1_048_576,
+      maxTokens: 8_192,
+    });
+  });
+
+  test('preserves controlled custom compatibility mode and drops unknown values', async () => {
+    const storedConfig: AppConfig = {
+      ...defaultConfig,
+      providers: {
+        ...defaultConfig.providers,
+        custom_0: {
+          enabled: true,
+          apiKey: 'sk-custom',
+          baseUrl: 'https://custom.example.com/v1',
+          apiFormat: 'openai',
+          models: [
+            {
+              id: 'my-kimi-prod',
+              name: 'My Kimi',
+              supportsImage: false,
+              supportsVideo: false,
+              supportsThinking: false,
+              contextWindow: 128_000,
+              maxTokens: 4_096,
+              compatibilityMode: ModelCompatibilityMode.MoonshotKimiK3,
+            },
+            {
+              id: 'ordinary-model',
+              name: 'Ordinary',
+              supportsImage: false,
+              compatibilityMode: 'unknown-mode' as ModelCompatibilityMode,
+            },
+          ],
+        },
+      },
+    };
+    const { configService, storeData } = await loadConfigServiceWithStoredConfig(storedConfig);
+
+    await configService.init();
+
+    const models = (storeData[CONFIG_KEYS.APP_CONFIG] as AppConfig).providers?.custom_0.models ?? [];
+    expect(models[0]).toMatchObject({
+      compatibilityMode: ModelCompatibilityMode.MoonshotKimiK3,
+      supportsImage: true,
+      supportsVideo: true,
+      supportsThinking: true,
+      contextWindow: 1_048_576,
+      maxTokens: 8_192,
+    });
+    expect(models[1]).not.toHaveProperty('compatibilityMode');
   });
 
   test('keeps an equivalent user GPT-5.6 Sol model while adding the other GPT-5.6 defaults', async () => {

@@ -60,6 +60,7 @@ import type {
 } from '../../../shared/kit/constants';
 import { OpenClawGatewayFailureKind } from '../../../shared/openclawEngine/constants';
 import { OpenClawTranscriptSafetyStatus } from '../../../shared/openclawTranscript/constants';
+import { ProviderName } from '../../../shared/providers';
 import type { Agent, CoworkExecutionMode, CoworkMessage, CoworkMessageMetadata, CoworkSession, CoworkSessionStatus, CoworkStore } from '../../coworkStore';
 import { t } from '../../i18n';
 import { MediaGenerationTool } from '../../mediaGenerationPolicy';
@@ -583,6 +584,7 @@ type TextStreamMode = 'unknown' | 'snapshot' | 'delta';
 
 const GatewayStopReason = {
   Error: 'error',
+  Length: 'length',
   ToolUse: 'toolUse',
   ToolUseSnake: 'tool_use',
 } as const;
@@ -1410,24 +1412,27 @@ const summarizeGatewayMessageShape = (message: unknown): string => {
   const role = typeof message.role === 'string' ? message.role : '?';
   const content = message.content;
   if (typeof content === 'string') {
-    return `role=${role} content=string(${content.length}) text="${truncate(content, 120)}"`;
+    return `role=${role} contentType=string contentLen=${content.length}`;
   }
   if (Array.isArray(content)) {
     const parts = content.map((item) => {
       if (!isRecord(item)) return typeof item;
       const type = typeof item.type === 'string' ? item.type : 'object';
-      const text = typeof item.text === 'string' ? `:${truncate(item.text, 60)}` : '';
-      return `${type}${text}`;
+      const textLength = typeof item.text === 'string' ? ` textLen=${item.text.length}` : '';
+      return `${type}${textLength}`;
     });
-    return `role=${role} content=[${parts.join(', ')}]`;
+    const toolCallCount = content.filter((item) => (
+      isRecord(item) && (item.type === 'toolCall' || item.type === 'tool_call')
+    )).length;
+    return `role=${role} contentType=array blocks=${content.length} blockTypes=[${parts.join(', ')}] toolCalls=${toolCallCount}`;
   }
   if (isRecord(content)) {
-    return `role=${role} contentKeys=${Object.keys(content).join(',')}`;
+    return `role=${role} contentType=object fields=${Object.keys(content).length}`;
   }
   if (typeof message.text === 'string') {
-    return `role=${role} text=${truncate(message.text, 120)}`;
+    return `role=${role} textLen=${message.text.length}`;
   }
-  return `role=${role} keys=${Object.keys(message).join(',')}`;
+  return `role=${role} fields=${Object.keys(message).length}`;
 };
 
 const messageHasToolCallBlock = (message: unknown): boolean => {
@@ -1439,6 +1444,10 @@ const messageHasToolCallBlock = (message: unknown): boolean => {
 
 const isToolUseStopReason = (stopReason: string | undefined): boolean => {
   return stopReason === GatewayStopReason.ToolUse || stopReason === GatewayStopReason.ToolUseSnake;
+};
+
+export const isIncompleteStopReason = (stopReason: string | undefined): boolean => {
+  return stopReason === GatewayStopReason.Length;
 };
 
 export function normalizeOpenClawRuntimeErrorMessage(errorMessage: string): string {
@@ -1476,7 +1485,7 @@ const COWORK_ERROR_KEY_BY_OPENCLAW_FAILOVER_REASON: Record<string, string> = {
   billing: CoworkErrorI18nKey.InsufficientBalance,
   rate_limit: CoworkErrorI18nKey.RateLimit,
   overloaded: CoworkErrorI18nKey.RateLimit,
-  timeout: CoworkErrorI18nKey.NetworkError,
+  timeout: CoworkErrorI18nKey.ModelResponseTimeout,
   server_error: CoworkErrorI18nKey.ServerError,
 };
 
@@ -1491,7 +1500,7 @@ const COWORK_ERROR_KEY_BY_OPENCLAW_RUNTIME_FAILURE_KIND: Record<string, string> 
   auth_invalid_token: CoworkErrorI18nKey.OAuthInvalid,
   rate_limit: CoworkErrorI18nKey.RateLimit,
   dns: CoworkErrorI18nKey.NetworkError,
-  timeout: CoworkErrorI18nKey.NetworkError,
+  timeout: CoworkErrorI18nKey.ModelResponseTimeout,
   upstream_html: CoworkErrorI18nKey.ServerError,
   proxy: CoworkErrorI18nKey.NetworkError,
   empty_response: CoworkErrorI18nKey.ServerError,
@@ -1534,6 +1543,13 @@ function classifyOpenClawSafeRuntimeErrorMetadata(
 ): string | null {
   if (!metadata) return null;
 
+  if (
+    metadata.provider?.trim() === ProviderName.LobsteraiServer
+    && metadata.httpCode?.trim() === '403'
+  ) {
+    return CoworkErrorI18nKey.ModelAccessDenied;
+  }
+
   const failureKind = metadata.providerRuntimeFailureKind?.trim();
   if (failureKind && COWORK_ERROR_KEY_BY_OPENCLAW_RUNTIME_FAILURE_KIND[failureKind]) {
     return COWORK_ERROR_KEY_BY_OPENCLAW_RUNTIME_FAILURE_KIND[failureKind];
@@ -1558,6 +1574,18 @@ function classifyOpenClawSafeRuntimeErrorMetadata(
   return null;
 }
 
+function isLobsterAILoginExpiredMetadata(
+  metadata: OpenClawSafeRuntimeErrorMetadata | undefined,
+): boolean {
+  if (metadata?.provider?.trim() !== ProviderName.LobsteraiServer) return false;
+  if (metadata.httpCode?.trim() === '403') return false;
+  if (metadata.providerRuntimeFailureKind?.trim() === 'auth_scope') return false;
+  return metadata.httpCode?.trim() === '401'
+    || metadata.failoverReason?.trim() === 'auth'
+    || metadata.providerRuntimeFailureKind?.trim() === 'auth_refresh'
+    || metadata.providerRuntimeFailureKind?.trim() === 'auth_invalid_token';
+}
+
 export function resolveOpenClawRuntimeErrorMessage(
   errorMessage: string,
   metadata?: OpenClawSafeRuntimeErrorMetadata,
@@ -1566,6 +1594,15 @@ export function resolveOpenClawRuntimeErrorMessage(
   const classifiedKey = classifyErrorKey(normalized);
 
   if (classifiedKey) {
+    if (
+      isLobsterAILoginExpiredMetadata(metadata)
+      && (
+        classifiedKey === CoworkErrorI18nKey.AuthInvalid
+        || classifiedKey === CoworkErrorI18nKey.OAuthInvalid
+      )
+    ) {
+      return t(CoworkErrorI18nKey.LobsterAILoginExpired);
+    }
     if (classifiedKey === CoworkErrorI18nKey.QuotaExhausted) {
       consumeRecentOpenClawTokenProxyQuotaError();
     }
@@ -1573,6 +1610,10 @@ export function resolveOpenClawRuntimeErrorMessage(
   }
 
   if (isOpenClawGenericLlmRequestFailed(normalized)) {
+    if (isLobsterAILoginExpiredMetadata(metadata)) {
+      consumeRecentOpenClawTokenProxyQuotaError();
+      return t(CoworkErrorI18nKey.LobsterAILoginExpired);
+    }
     const metadataClassifiedKey = classifyOpenClawSafeRuntimeErrorMetadata(metadata);
     if (metadataClassifiedKey) {
       consumeRecentOpenClawTokenProxyQuotaError();
@@ -8752,9 +8793,10 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       ? messageRecord.errorMessage
       : undefined;
     const stoppedByToolUse = isToolUseStopReason(stopReason) || messageHasToolCallBlock(messageRecord);
+    const stoppedByIncomplete = isIncompleteStopReason(stopReason);
     const rawVisibleFinalText = stripTrailingSilentReplyToken(rawFinalText);
     const finalTextIsOpenClawFailure = isOpenClawFailureFinalText(rawVisibleFinalText);
-    const finalText = turn.planMode && !stoppedByToolUse && !finalTextIsOpenClawFailure
+    const finalText = turn.planMode && !stoppedByToolUse && !stoppedByIncomplete && !finalTextIsOpenClawFailure
       ? ensurePlanModeProposedPlanBlock(rawVisibleFinalText)
       : rawVisibleFinalText;
     console.debug(
@@ -8763,10 +8805,9 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       `runId=${payload.runId ?? turn.runId}`,
       `message=${summarizeGatewayMessageShape(payload.message)}`,
       `previousTextLen=${previousText.length}`,
-      `finalTextLen=${finalText.length}`,
-      `finalText="${truncate(finalText, 200)}"`
+      `finalTextLen=${finalText.length}`
     );
-    if (isHeartbeatAckText(finalText)) {
+    if (!stoppedByIncomplete && isHeartbeatAckText(finalText)) {
       turn.currentText = finalText;
       turn.currentAssistantSegmentText = '';
       if (turn.assistantMessageId) {
@@ -8780,7 +8821,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       this.resolveTurn(sessionId);
       return;
     }
-    if (isSilentReplyText(finalText) || isSilentReplyPrefixText(finalText)) {
+    if (!stoppedByIncomplete && (isSilentReplyText(finalText) || isSilentReplyPrefixText(finalText))) {
       turn.currentText = finalText;
       turn.currentAssistantSegmentText = '';
       if (turn.assistantMessageId) {
@@ -8916,6 +8957,83 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
         turn.assistantMessageId = assistantMessage.id;
         this.emit('message', sessionId, assistantMessage);
       }
+    }
+
+    if (stoppedByIncomplete) {
+      // A length stop is still a terminal gateway snapshot. Reconcile the
+      // bounded authoritative tail before finalizing local state so reasoning
+      // and tool work that arrived only in chat.history are not lost. The
+      // helper is best-effort and preserves the already-persisted local
+      // partial when history is unavailable.
+      await this.syncFinalAssistantWithHistory(sessionId, turn, {
+        requireActiveTurn: true,
+        suppressPlanModeWrapping: true,
+      });
+      if (
+        this.activeTurns.get(sessionId) !== turn
+        || turn.stopRequested
+      ) {
+        console.debug(
+          '[OpenClawRuntime] ignored length final after the turn was stopped or superseded.',
+          `sessionId=${sessionId}`,
+        );
+        return;
+      }
+
+      // Flush/finalize thinking before applying truncation metadata. Otherwise a
+      // pending thinking write can overwrite the incomplete marker.
+      this.thinkingController.finalize(sessionId, turn);
+      const truncatedMessageId = this.resolveAssistantMessageIdForUsage(
+        sessionId,
+        turn.assistantMessageId,
+      );
+      if (truncatedMessageId) {
+        const session = this.store.getSession(sessionId);
+        const truncatedMessage = session?.messages.find((message) => message.id === truncatedMessageId);
+        if (truncatedMessage) {
+          const truncatedMetadata = {
+            ...(truncatedMessage.metadata ?? {}),
+            isStreaming: false,
+            isFinal: true,
+            isTruncated: true,
+            stopReason: GatewayStopReason.Length,
+          };
+          this.store.updateMessage(sessionId, truncatedMessageId, {
+            metadata: truncatedMetadata,
+          });
+          this.emit(
+            'messageUpdate',
+            sessionId,
+            truncatedMessageId,
+            truncatedMessage.content,
+            truncatedMetadata,
+          );
+        }
+      }
+
+      const incompleteMessage = t('taskOutputTruncated');
+      this.store.updateSession(sessionId, { status: 'error' });
+      const systemMessage = this.store.addMessage(sessionId, {
+        type: 'system',
+        content: incompleteMessage,
+        metadata: {
+          error: incompleteMessage,
+          isFinal: true,
+          isIncomplete: true,
+          isTruncated: true,
+          stopReason: GatewayStopReason.Length,
+        },
+      });
+      this.emit('message', sessionId, systemMessage);
+      this.emit('error', sessionId, incompleteMessage);
+      console.warn(
+        '[OpenClawRuntime] preserved a partial response after the model reached its output limit.',
+        `sessionId=${sessionId}`,
+        `runId=${payload.runId ?? turn.runId}`,
+      );
+      this.cleanupSessionTurn(sessionId);
+      this.rejectTurn(sessionId, new Error(incompleteMessage));
+      return;
     }
 
     if (!finalText.trim()) {
@@ -10184,7 +10302,14 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     );
   }
 
-  private async syncFinalAssistantWithHistory(sessionId: string, turn: ActiveTurn): Promise<void> {
+  private async syncFinalAssistantWithHistory(
+    sessionId: string,
+    turn: ActiveTurn,
+    options: {
+      requireActiveTurn?: boolean;
+      suppressPlanModeWrapping?: boolean;
+    } = {},
+  ): Promise<void> {
     console.debug('[OpenClawRuntime] syncFinalAssistant — sessionId:', sessionId);
     const client = this.gatewayClient;
     if (!client) {
@@ -10199,6 +10324,16 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       let isChannel = false;
 
       for (const delayMs of retryDelaysMs) {
+        if (
+          options.requireActiveTurn
+          && (
+            this.activeTurns.get(sessionId) !== turn
+            || turn.stopRequested
+          )
+        ) {
+          console.debug('[OpenClawRuntime] syncFinalAssistant — inactive turn, skipping');
+          return;
+        }
         if (delayMs > 0) {
           await sleep(delayMs);
         }
@@ -10207,6 +10342,16 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
           sessionKey: turn.sessionKey,
           limit: FINAL_HISTORY_SYNC_LIMIT,
         }, { timeoutMs: 8_000 });
+        if (
+          options.requireActiveTurn
+          && (
+            this.activeTurns.get(sessionId) !== turn
+            || turn.stopRequested
+          )
+        ) {
+          console.debug('[OpenClawRuntime] syncFinalAssistant — turn stopped during history request');
+          return;
+        }
         const msgCount = Array.isArray(history?.messages) ? history.messages.length : 0;
         console.debug('[OpenClawRuntime] syncFinalAssistant — chat.history returned', msgCount, 'messages');
         if (!Array.isArray(history?.messages) || history.messages.length === 0) {
@@ -10289,7 +10434,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
         }
       }
 
-      if (turn.planMode) {
+      if (turn.planMode && !options.suppressPlanModeWrapping) {
         canonicalText = ensurePlanModeProposedPlanBlock(canonicalText);
       }
 
@@ -10302,7 +10447,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       let canonicalSegmentText = isManagedSessionKey(turn.sessionKey)
         ? extractLastAssistantSegmentInTurn(historyMessages!)
         : this.resolveAssistantSegmentText(turn, canonicalText);
-      if (turn.planMode) {
+      if (turn.planMode && !options.suppressPlanModeWrapping) {
         canonicalSegmentText = ensurePlanModeProposedPlanBlock(canonicalSegmentText);
       }
       console.debug('[Debug:syncFinal] canonicalSegmentText length:', canonicalSegmentText.length,

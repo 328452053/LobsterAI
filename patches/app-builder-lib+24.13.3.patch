@@ -161,6 +161,47 @@ index f5470bf..c9ebc07 100644
      Quit
  
    RetryExtract7za:
+diff --git a/node_modules/app-builder-lib/templates/nsis/include/installUtil.nsh b/node_modules/app-builder-lib/templates/nsis/include/installUtil.nsh
+index 4736774..536fe36 100644
+--- a/node_modules/app-builder-lib/templates/nsis/include/installUtil.nsh
++++ b/node_modules/app-builder-lib/templates/nsis/include/installUtil.nsh
+@@ -16,6 +16,8 @@
+   CopyFiles /SILENT `${FROM}` `${TO}`
+ !macroend
+-
++!ifmacrodef customUninstallOldVersion
++!else
++
+ Function GetInQuotes
+   Exch $R0
+   Push $R1
+@@ -80,5 +82,6 @@ Function GetFileParent
+     Pop $R1
+     Exch $R0
+ FunctionEnd
+-
++!endif
++
+ Var /GLOBAL isTryToKeepShortcuts
+@@ -105,6 +108,12 @@ Var /GLOBAL isTryToKeepShortcuts
+   ${endif}
+ !macroend
+-
++; A product-provided customUninstallOldVersion macro owns both candidate
++; discovery and the terminal result. In that case, omit the stock legacy
++; uninstaller functions entirely so warning-as-error builds do not retain an
++; unreferenced (and deliberately untrusted) execution path.
++!ifmacrodef customUninstallOldVersion
++!else
++
+ Function handleUninstallResult
+   Var /GLOBAL rootKey_uninstallResult
+   Exch $rootKey_uninstallResult
+@@ -246,3 +255,4 @@ FunctionEnd
+   Push "${ROOT_KEY}"
+   Call uninstallOldVersion
+ !macroend
++!endif
 diff --git a/node_modules/app-builder-lib/templates/nsis/include/installer.nsh b/node_modules/app-builder-lib/templates/nsis/include/installer.nsh
 index 34e91df..702be81 100644
 --- a/node_modules/app-builder-lib/templates/nsis/include/installer.nsh
@@ -270,7 +311,7 @@ index 8ec0be3..253545c 100644
    StrCpy $packageFile "$PLUGINSDIR\package.7z"
  !macroend
 diff --git a/node_modules/app-builder-lib/templates/nsis/installSection.nsh b/node_modules/app-builder-lib/templates/nsis/installSection.nsh
-index 053772f..57a73d8 100644
+index 053772f..b6ed86a 100644
 --- a/node_modules/app-builder-lib/templates/nsis/installSection.nsh
 +++ b/node_modules/app-builder-lib/templates/nsis/installSection.nsh
 @@ -11,6 +11,20 @@ StrCpy $appExe "$INSTDIR\${APP_EXECUTABLE_FILENAME}"

@@ -1,4 +1,5 @@
 import type { ApiFormat, ProviderAuthType } from './constants';
+import type { ModelCompatibilityMode } from './modelRuntimeProfiles';
 
 export interface ProviderConfig {
   enabled: boolean;
@@ -9,8 +10,11 @@ export interface ProviderConfig {
     id: string;
     name: string;
     supportsImage?: boolean;
+    supportsVideo?: boolean;
     supportsThinking?: boolean;
     contextWindow?: number;
+    maxTokens?: number;
+    compatibilityMode?: ModelCompatibilityMode;
     customParams?: Record<string, unknown>;
   }>;
   displayName?: string;
