@@ -5,6 +5,12 @@ import type {
   AsrRealtimeSessionResult,
 } from '../../shared/asr/constants';
 import type {
+  AuthLifecycleEvent,
+  AuthRefreshOutcome,
+  AuthSessionChangedEvent,
+  AuthSessionStatus,
+} from '../../shared/auth/constants';
+import type {
   BrowserDiagnosticResult,
   BrowserRuntimeProfile,
 } from '../../shared/browserWebAccess/constants';
@@ -24,6 +30,7 @@ import type {
   CoworkContextUsageFailureReason,
   CoworkContextUsageSource,
   CoworkSessionsChangedPayload,
+  CoworkStopStatus,
 } from '../../shared/cowork/constants';
 import type { CoworkGoal } from '../../shared/cowork/goal';
 import type { CoworkMessageRailIndexItem } from '../../shared/cowork/rail';
@@ -72,6 +79,21 @@ import type {
   ShellGetBrowserAppsInput,
   ShellOpenFailureReason,
 } from '../../shared/shell/constants';
+import type {
+  SiteAnalytics,
+  SiteAnalyticsOptions,
+  SiteDeploymentQuota,
+  SiteDeploymentQuotaOptions,
+  SiteDetail,
+  SiteListData,
+  SiteListOptions,
+  SiteQuotaReservation,
+  SiteQuotaReservationInput,
+  SiteResult,
+  SiteUpdateAccessModeInput,
+  SiteUpdateAccessStatusInput,
+  SiteUpdateTitleInput,
+} from '../../shared/site/constants';
 import type {
   SkinApplyResponse,
   SkinBindThemeResponse,
@@ -864,7 +886,11 @@ interface IElectronAPI {
       code?: string;
       engineStatus?: OpenClawEngineStatus;
     }>;
-    stopSession: (sessionId: string) => Promise<{ success: boolean; error?: string }>;
+    stopSession: (sessionId: string) => Promise<{
+      success: boolean;
+      status?: CoworkStopStatus;
+      error?: string;
+    }>;
     deleteSession: (sessionId: string) => Promise<{ success: boolean; error?: string }>;
     deleteSessions: (sessionIds: string[]) => Promise<{ success: boolean; error?: string }>;
     setSessionPinned: (options: {
@@ -1261,6 +1287,25 @@ interface IElectronAPI {
     downloadPersistenceArchive: (
       options: ShareDeploymentDownloadPersistenceInput,
     ) => Promise<ShareDeploymentDownloadPersistenceResult>;
+  };
+  sites: {
+    list: (options?: SiteListOptions) => Promise<SiteResult<SiteListData>>;
+    get: (shareId: string) => Promise<SiteResult<SiteDetail>>;
+    updateTitle: (input: SiteUpdateTitleInput) => Promise<SiteResult<SiteDetail>>;
+    updateAccessMode: (input: SiteUpdateAccessModeInput) => Promise<SiteResult<SiteDetail>>;
+    updateAccessStatus: (input: SiteUpdateAccessStatusInput) => Promise<SiteResult<SiteDetail>>;
+    delete: (shareId: string) => Promise<SiteResult<null>>;
+    getAnalytics: (
+      shareId: string,
+      options?: SiteAnalyticsOptions,
+    ) => Promise<SiteResult<SiteAnalytics>>;
+    getDeploymentQuota: (
+      options?: SiteDeploymentQuotaOptions,
+    ) => Promise<SiteResult<SiteDeploymentQuota>>;
+    createQuotaReservation: (
+      input: SiteQuotaReservationInput,
+    ) => Promise<SiteResult<SiteQuotaReservation>>;
+    releaseQuotaReservation: (reservationId: string) => Promise<SiteResult<null>>;
   };
   asr: {
     createRealtimeSession: (options: AsrRealtimeSessionRequest) => Promise<AsrRealtimeSessionResult>;
@@ -1702,10 +1747,21 @@ interface IElectronAPI {
     exchange: (
       code: string,
     ) => Promise<{ success: boolean; user?: any; quota?: any; error?: string }>;
-    getUser: () => Promise<{ success: boolean; user?: any; quota?: any }>;
+    getUser: () => Promise<{
+      success: boolean;
+      status?: AuthSessionStatus;
+      hasCredentials?: boolean;
+      cachedUser?: any;
+      user?: any;
+      quota?: any;
+    }>;
     getQuota: () => Promise<{ success: boolean; quota?: any }>;
     logout: () => Promise<{ success: boolean }>;
-    refreshToken: () => Promise<{ success: boolean; accessToken?: string }>;
+    refreshToken: () => Promise<{
+      success: boolean;
+      accessToken?: string;
+      outcome?: AuthRefreshOutcome;
+    }>;
     getAccessToken: () => Promise<string | null>;
     getModels: () => Promise<{
       success: boolean;
@@ -1714,9 +1770,14 @@ interface IElectronAPI {
         modelName: string;
         provider: string;
         apiFormat: string;
+        runtimeProfile?: import('../../shared/providers/modelRuntimeProfiles').ModelRuntimeProfile;
         supportsImage?: boolean;
+        supportsVideo?: boolean;
         supportsThinking?: boolean;
+        supportsToolCalling?: boolean;
+        agenticReady?: boolean;
         contextWindow?: number;
+        maxTokens?: number;
         explicitContextCache?: boolean;
         costMultiplier?: number;
         description?: string;
@@ -1746,6 +1807,8 @@ interface IElectronAPI {
     getPendingCallback: () => Promise<string | null>;
     onCallback: (callback: (data: { code: string }) => void) => () => void;
     onQuotaChanged: (callback: () => void) => () => void;
+    onSessionChanged: (callback: (event: AuthSessionChangedEvent) => void) => () => void;
+    onLifecycleEvent: (callback: (event: AuthLifecycleEvent) => void) => () => void;
   };
   media: {
     getModels: (type: 'image' | 'video') => Promise<{ success: boolean; models?: Array<{ modelId: string; displayName: string; provider: string; mediaType: string; generationTimeout: number; pricing: Record<string, unknown> }>; error?: string }>;
@@ -1778,6 +1841,9 @@ interface IElectronAPI {
     }>;
     getUser: () => Promise<{
       success: boolean;
+      status?: AuthSessionStatus;
+      hasCredentials?: boolean;
+      cachedUser?: import('../store/slices/authSlice').UserProfile | null;
       user?: import('../store/slices/authSlice').UserProfile;
       quota?: {
         planName: string;
@@ -1798,10 +1864,17 @@ interface IElectronAPI {
       };
     }>;
     logout: () => Promise<{ success: boolean }>;
-    refreshToken: () => Promise<{ success: boolean; accessToken?: string }>;
+    refreshToken: () => Promise<{
+      success: boolean;
+      accessToken?: string;
+      outcome?: AuthRefreshOutcome;
+    }>;
     getAccessToken: () => Promise<string | null>;
     getPendingCallback: () => Promise<string | null>;
     onCallback: (callback: (data: { code: string }) => void) => () => void;
+    onQuotaChanged: (callback: () => void) => () => void;
+    onSessionChanged: (callback: (event: AuthSessionChangedEvent) => void) => () => void;
+    onLifecycleEvent: (callback: (event: AuthLifecycleEvent) => void) => () => void;
   };
   qwen: Record<string, never>;
   feishu: {

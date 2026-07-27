@@ -5,6 +5,7 @@ import type {
   CoworkBtwEntry,
   CoworkBtwSubmitResponse,
 } from '../../../shared/cowork/btw';
+import type { CoworkStopResult } from '../../../shared/cowork/constants';
 import type { CoworkGoal } from '../../../shared/cowork/goal';
 import type { CoworkImageAttachmentPayload } from '../../../shared/cowork/imageAttachments';
 import type { CoworkSelectedTextSnippet } from '../../../shared/cowork/selectedText';
@@ -164,6 +165,7 @@ export interface CoworkRuntime {
   getContextUsage?(sessionId: string): Promise<CoworkContextUsage | null>;
   compactContext?(sessionId: string): Promise<{ compacted: boolean; reason?: string; usage?: CoworkContextUsage | null }>;
   getForkCompactionSummary?(sessionId: string, beforeCreatedAt?: number): Promise<CoworkForkCompactionSummary | null>;
+  abortSessionAndConfirm(sessionId: string): Promise<CoworkStopResult>;
   stopSession(sessionId: string): void;
   stopAllSessions(): void;
   respondToPermission(requestId: string, result: PermissionResult): void;

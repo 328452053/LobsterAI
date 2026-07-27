@@ -744,6 +744,7 @@ class CoworkService {
     this.contextUsageInFlightBySessionId.clear();
     this.contextUsageAutoSuppressedUntilBySessionId.clear();
     this.contextUsageBackoffUntil.clear();
+    this.btwAbortRunIds.clear();
   }
 
   async loadSessions(agentId?: string): Promise<void> {
@@ -1329,6 +1330,9 @@ class CoworkService {
     }
 
     this.logDiagnostic('warn', `stop failed for session ${sessionId}: ${result.error ?? 'Unknown error'}.`);
+    window.dispatchEvent(new CustomEvent('app:showToast', {
+      detail: i18nService.t('coworkStopFailed'),
+    }));
     return false;
   }
 

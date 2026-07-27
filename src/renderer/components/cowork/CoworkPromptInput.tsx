@@ -120,6 +120,7 @@ import TrashIcon from '../icons/TrashIcon';
 import XMarkIcon from '../icons/XMarkIcon';
 import { ActiveKitBadge, KitsButton } from '../kits';
 import ModelSelector, {
+  isModelAgenticBlocked,
   ModelAccessPromptKind,
   ModelAccessPromptModal,
   type ModelSelectorChangeMeta,
@@ -530,6 +531,8 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     const [isTemplateHeightLocked, setIsTemplateHeightLocked] = useState(false);
 
     const textareaRef = useRef<HTMLTextAreaElement>(null);
+    const draftKeyRef = useRef(draftKey);
+    draftKeyRef.current = draftKey;
     const addMenuButtonRef = useRef<HTMLButtonElement>(null);
     const addMenuRef = useRef<HTMLDivElement>(null);
     const goalEditTextareaRef = useRef<HTMLTextAreaElement>(null);
@@ -652,6 +655,9 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     if (!isLoggedIn && !hasAccessibleUserModel) {
       return ModelAccessPromptKind.Login;
     }
+    if (isModelAgenticBlocked(effectiveSelectedModel)) {
+      return ModelAccessPromptKind.AgenticNotReady;
+    }
     if (
       effectiveSelectedModel?.providerKey === ProviderName.LobsteraiServer
       && effectiveSelectedModel.accessible === false
@@ -661,8 +667,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     return null;
   }, [
     availableModels,
-    effectiveSelectedModel?.accessible,
-    effectiveSelectedModel?.providerKey,
+    effectiveSelectedModel,
     isLoggedIn,
   ]);
 
@@ -1292,6 +1297,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
       }
 
       const runId = createCoworkBtwRunId();
+      const submittedDraft = value;
       const accepted = await coworkService.submitBtw({
         sessionId,
         question: btwCommand.question,
@@ -1300,9 +1306,12 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
       if (!accepted) {
         return;
       }
-      setValue('');
-      dispatch(setDraftPrompt({ sessionId: draftKey, draft: '' }));
-      inputSourceOverrideRef.current = null;
+      const currentTextareaValue = textareaRef.current?.value;
+      if (draftKeyRef.current === draftKey && currentTextareaValue === submittedDraft) {
+        setValue('');
+        dispatch(setDraftPrompt({ sessionId: draftKey, draft: '' }));
+        inputSourceOverrideRef.current = null;
+      }
       reportPromptSubmit({
         ...getPromptContextAnalyticsParams(),
         submitMethod: effectiveSubmitMethod,

@@ -36,6 +36,7 @@ export const COWORK_TEMP_ATTACHMENTS_DIR_NAME = 'attachments';
 export const CoworkIpcChannel = {
   MediaStatusPollUpdate: 'cowork:media:statusPollUpdate',
   ForkSession: 'cowork:session:fork',
+  StopSession: 'cowork:session:stop',
   SubTaskHistory: 'cowork:subTask:history',
   SubagentList: 'cowork:subagent:list',
   SubagentListByAgent: 'cowork:subagent:listByAgent',
@@ -62,6 +63,18 @@ export const CoworkIpcChannel = {
   TempStorageClean: 'cowork:tempStorage:clean',
 } as const;
 export type CoworkIpcChannel = typeof CoworkIpcChannel[keyof typeof CoworkIpcChannel];
+
+export const CoworkStopStatus = {
+  Aborted: 'aborted',
+  AlreadyIdle: 'already_idle',
+  Failed: 'failed',
+} as const;
+export type CoworkStopStatus = typeof CoworkStopStatus[keyof typeof CoworkStopStatus];
+
+export type CoworkStopResult =
+  | { status: typeof CoworkStopStatus.Aborted }
+  | { status: typeof CoworkStopStatus.AlreadyIdle }
+  | { status: typeof CoworkStopStatus.Failed; error: string };
 
 export interface CoworkSessionsChangedPayload {
   sessionIds: string[];

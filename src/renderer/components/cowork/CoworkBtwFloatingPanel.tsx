@@ -105,7 +105,7 @@ const logPanelGeometry = (
       + `width=${Math.round(geometry.width)}; height=${Math.round(geometry.height)}.`,
     );
   } catch (error) {
-    console.debug('[CoworkBtwFloatingPanel] failed to persist geometry diagnostic.', error);
+    console.debug('[CoworkBtwFloatingPanel] failed to forward geometry diagnostic.', error);
   }
 };
 
@@ -134,9 +134,69 @@ const CoworkBtwFloatingPanel: React.FC<CoworkBtwFloatingPanelProps> = ({
   );
   const pending = Boolean(pendingEntry);
   const normalizedDraftLength = normalizeCoworkBtwSelectedTextQuestion(thread.draft).length;
+  const emptyThreadText = i18nService.t('coworkBtwEmptyThread');
+  const pendingText = i18nService.t('coworkBtwPending');
+  const failedText = i18nService.t('coworkBtwFailed');
+  const stoppedText = i18nService.t('coworkBtwStopped');
   const canSubmit = normalizedDraftLength > 0
     && normalizedDraftLength <= COWORK_BTW_QUESTION_MAX_CHARS
     && !pending;
+  // Geometry and draft changes are high-frequency. Keep the potentially large
+  // Markdown subtree stable unless its content, resolver, or locale changes.
+  const renderedEntries = useMemo(() => (
+    <>
+      {thread.entries.length === 0 && (
+        <div className="flex h-full min-h-32 items-center justify-center px-6 text-center text-sm text-muted">
+          {emptyThreadText}
+        </div>
+      )}
+      <div className="space-y-3">
+        {thread.entries.map(entry => (
+          <article key={entry.runId} className="space-y-2">
+            <div className="flex justify-end">
+              <div className="w-fit max-w-[85%] rounded-lg bg-primary/10 px-3 py-2 text-sm whitespace-pre-wrap break-words text-foreground">
+                {entry.question}
+              </div>
+            </div>
+            <div className="mr-8 rounded-lg border border-border bg-surface-raised px-3 py-2">
+              {entry.status === CoworkBtwStatus.Pending && (
+                <div className="flex items-center gap-2 text-sm text-muted">
+                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
+                  {pendingText}
+                </div>
+              )}
+              {entry.status === CoworkBtwStatus.Answered && (
+                <MarkdownContent
+                  content={entry.answer ?? ''}
+                  className="prose dark:prose-invert max-w-none text-sm text-foreground"
+                  spacing="compact"
+                  resolveLocalFilePath={resolveLocalFilePath}
+                  showRevealInFolderAction
+                />
+              )}
+              {entry.status === CoworkBtwStatus.Failed && (
+                <p className="whitespace-pre-wrap break-words text-sm text-danger">
+                  {entry.error || failedText}
+                </p>
+              )}
+              {entry.status === CoworkBtwStatus.Stopped && (
+                <p className="text-sm text-muted">
+                  {stoppedText}
+                </p>
+              )}
+            </div>
+          </article>
+        ))}
+      </div>
+    </>
+  ), [
+    emptyThreadText,
+    failedText,
+    pendingText,
+    resolveLocalFilePath,
+    stoppedText,
+    thread.entries,
+  ]);
 
   useEffect(() => {
     const handleResize = () => {
@@ -292,50 +352,7 @@ const CoworkBtwFloatingPanel: React.FC<CoworkBtwFloatingPanelProps> = ({
           aria-live="polite"
           className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3"
         >
-          {thread.entries.length === 0 && (
-            <div className="flex h-full min-h-32 items-center justify-center px-6 text-center text-sm text-muted">
-              {i18nService.t('coworkBtwEmptyThread')}
-            </div>
-          )}
-          <div className="space-y-3">
-            {thread.entries.map(entry => (
-              <article key={entry.runId} className="space-y-2">
-                <div className="flex justify-end">
-                  <div className="w-fit max-w-[85%] rounded-lg bg-primary/10 px-3 py-2 text-sm whitespace-pre-wrap break-words text-foreground">
-                    {entry.question}
-                  </div>
-                </div>
-                <div className="mr-8 rounded-lg border border-border bg-surface-raised px-3 py-2">
-                  {entry.status === CoworkBtwStatus.Pending && (
-                    <div className="flex items-center gap-2 text-sm text-muted">
-                      <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
-                      {i18nService.t('coworkBtwPending')}
-                    </div>
-                  )}
-                  {entry.status === CoworkBtwStatus.Answered && (
-                    <MarkdownContent
-                      content={entry.answer ?? ''}
-                      className="prose dark:prose-invert max-w-none text-sm text-foreground"
-                      spacing="compact"
-                      resolveLocalFilePath={resolveLocalFilePath}
-                      showRevealInFolderAction
-                      enableLargePreview={false}
-                    />
-                  )}
-                  {entry.status === CoworkBtwStatus.Failed && (
-                    <p className="whitespace-pre-wrap break-words text-sm text-danger">
-                      {entry.error || i18nService.t('coworkBtwFailed')}
-                    </p>
-                  )}
-                  {entry.status === CoworkBtwStatus.Stopped && (
-                    <p className="text-sm text-muted">
-                      {i18nService.t('coworkBtwStopped')}
-                    </p>
-                  )}
-                </div>
-              </article>
-            ))}
-          </div>
+          {renderedEntries}
         </div>
 
         <div className="shrink-0 border-t border-border bg-surface p-3">
