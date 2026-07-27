@@ -31,8 +31,10 @@ history, fail during an active turn, or complete without displaying the answer.
   unchanged.
 - Render BTW questions and answers in an application-internal floating side-chat
   window with a fixed default rectangular size.
-- Place the window in the bottom-right corner initially, then allow dragging
-  and resizing while keeping it inside the visible application viewport.
+- Place the window above and right-aligned with the main prompt initially,
+  falling back to the bottom-right corner when that anchor is unavailable,
+  then allow dragging and resizing while keeping it inside the visible
+  application viewport.
 - Let selected assistant text prefill an editable side-chat input without
   sending until the user explicitly submits it.
 - Let the user stop only the pending side-chat request without stopping or
@@ -42,7 +44,8 @@ history, fail during an active turn, or complete without displaying the answer.
 - Keep BTW questions and answers out of Cowork messages, SQLite conversation
   history, titles, continuity capsules, and OpenClaw `chat.history`.
 - Use OpenClaw's existing `chat.send` command handling and `chat.side_result`
-  contract without patching the pinned runtime.
+  contract, with a version-scoped compatibility patch for the pinned runtime's
+  provider run-safety integration.
 - Preserve session and agent isolation when multiple Cowork sessions are open
   or syncing from external channels.
 - Add Chinese and English strings for all BTW UI and error states.
@@ -109,6 +112,13 @@ the visible temporary exchanges in renderer memory and includes recent
 answered exchanges in a later request as bounded single-line context so
 follow-up questions can refer to them.
 
+The pinned runtime registers and resolves BTW provider streams with
+`ProviderStreamPurpose.Utility`. Utility fallbacks must not be promoted to an
+Agent boundary-aware stream because BTW does not own the host Agent dispatch
+scope required by that stream contract. The resolver defaults every caller
+without an explicit purpose to `Agent`, preserving the main task, compaction,
+and other embedded-agent run-safety paths.
+
 ## Product Behavior
 
 ### Command Detection
@@ -145,8 +155,11 @@ characters, and gateway session keys are rejected above 4,096 characters.
 The current session displays an application-internal floating window outside
 the normal message-list persistence model.
 
-- Its default geometry is a 440 × 520 rectangular window, inset 16 pixels from
-  the application viewport's bottom-right corner.
+- Its default geometry is a 430 × 450 rectangular window positioned 16 pixels
+  above and right-aligned with the main prompt input. If the prompt anchor is
+  unavailable, it falls back to the application viewport's bottom-right
+  corner. Reopening the window recalculates this default geometry within the
+  current viewport.
 - The title bar is a pointer drag handle. Invisible hit regions on all four
   edges and all four corners resize the window without a permanent resize
   icon.
@@ -159,6 +172,11 @@ the normal message-list persistence model.
   back into view.
 - The message area independently scrolls and renders completed answers with
   the existing sanitized Markdown renderer.
+- The window reuses the main conversation's theme tokens, borders,
+  rounded-input, and send-button treatments. Its shell uses the elevated
+  `surface` layer while the composer uses the inset `background` layer. A
+  modal-level shadow and subtle outline keep it distinct when it overlaps the
+  conversation, especially in dark themes.
 - User question bubbles are right-aligned, shrink to short content, and are
   capped at 85% of the message-area width so short questions do not look like
   full-width banners.
@@ -378,7 +396,9 @@ remain authoritative.
 ## Compatibility
 
 - No SQLite migration is required.
-- No OpenClaw patch is required for the pinned `v2026.6.1` runtime.
+- The version-scoped OpenClaw `v2026.6.1` patch keeps BTW utility fallbacks
+  outside Agent run-safety streams while leaving the default Agent path
+  unchanged.
 - macOS and Windows use the same Electron IPC and Gateway event path.
 - Older or incompatible runtimes return a visible ephemeral failure instead of
   silently falling back to a normal chat message.

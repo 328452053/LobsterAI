@@ -2,8 +2,6 @@ import { describe, expect, test } from 'vitest';
 
 import {
   clampCoworkBtwPanelGeometry,
-  COWORK_BTW_PANEL_DEFAULT_HEIGHT,
-  COWORK_BTW_PANEL_DEFAULT_WIDTH,
   COWORK_BTW_PANEL_MARGIN,
   CoworkBtwResizeDirection,
   getInitialCoworkBtwPanelGeometry,
@@ -16,10 +14,44 @@ describe('coworkBtwPanelGeometry', () => {
       width: 1440,
       height: 900,
     })).toEqual({
-      x: 1440 - COWORK_BTW_PANEL_DEFAULT_WIDTH - COWORK_BTW_PANEL_MARGIN,
-      y: 900 - COWORK_BTW_PANEL_DEFAULT_HEIGHT - COWORK_BTW_PANEL_MARGIN,
-      width: COWORK_BTW_PANEL_DEFAULT_WIDTH,
-      height: COWORK_BTW_PANEL_DEFAULT_HEIGHT,
+      x: 994,
+      y: 434,
+      width: 430,
+      height: 450,
+    });
+  });
+
+  test('places the default rectangle above and right-aligned with the prompt input', () => {
+    expect(getInitialCoworkBtwPanelGeometry({
+      width: 1440,
+      height: 900,
+    }, {
+      top: 800,
+      right: 1200,
+      width: 800,
+      height: 120,
+    })).toEqual({
+      x: 770,
+      y: 334,
+      width: 430,
+      height: 450,
+    });
+  });
+
+  test('falls back to the viewport corner when the prompt anchor is hidden', () => {
+    expect(getInitialCoworkBtwPanelGeometry({
+      width: 1440,
+      height: 900,
+    }, {
+      top: 0,
+      right: 0,
+      width: 0,
+      height: 0,
+    })).toEqual({
+      x: 994,
+      y: 434,
+      width: 430,
+      height: 450,
     });
   });
 

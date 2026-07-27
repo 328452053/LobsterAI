@@ -59,6 +59,7 @@ const patchFiles = fs.readdirSync(patchesDir)
 
 const requiredRunSafetyPatchFiles = [
   'openclaw-varying-args-no-progress-core.patch',
+  'openclaw-varying-args-no-progress-correction-btw-utility.patch',
   'openclaw-varying-args-no-progress-delivery.patch',
   'openclaw-varying-args-no-progress-native-receipt.patch',
   'openclaw-z-agent-harness-run-safety.patch',
@@ -698,6 +699,38 @@ const strongPatchValidators = {
       file: 'extensions/ollama/src/stream-runtime.test.ts',
       snippets: [
         'awaits the final payload gate and sends its replacement before fetch',
+      ],
+    },
+  ],
+  'openclaw-varying-args-no-progress-correction-btw-utility.patch': [
+    {
+      file: 'src/agents/embedded-agent-runner/stream-resolution.ts',
+      snippets: [
+        'purpose?: ProviderStreamPurposeType;',
+        'const purpose = params.purpose ?? ProviderStreamPurpose.Agent;',
+        'purpose === ProviderStreamPurpose.Agent &&',
+        'Utility callers such as /btw do not establish the host-owned Agent',
+      ],
+    },
+    {
+      file: 'src/agents/btw.ts',
+      snippets: [
+        'authProfileId: resolvedAuthProfileId,\n    purpose: ProviderStreamPurpose.Utility,',
+      ],
+    },
+    {
+      file: 'src/agents/embedded-agent-runner/stream-resolution.test.ts',
+      snippets: [
+        'keeps default Agent fallbacks on boundary transports with runtime auth',
+        'keeps utility streamSimple fallbacks outside Agent boundary transports',
+        'expect(streamFn).not.toBe(streamSimple);',
+        'expect(streamFn).toBe(streamSimple);',
+      ],
+    },
+    {
+      file: 'src/agents/btw.test.ts',
+      snippets: [
+        'purpose: registerProviderStreamForModelMock.mock.calls[0]?.[0]?.purpose,',
       ],
     },
   ],

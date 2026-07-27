@@ -6,6 +6,7 @@ import {
 import React, {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -23,6 +24,8 @@ import { i18nService } from '../../services/i18n';
 import MarkdownContent from '../MarkdownContent';
 import {
   clampCoworkBtwPanelGeometry,
+  COWORK_BTW_PANEL_DEFAULT_HEIGHT,
+  COWORK_BTW_PANEL_DEFAULT_WIDTH,
   type CoworkBtwPanelGeometry,
   CoworkBtwResizeDirection,
   type CoworkBtwResizeDirection as CoworkBtwResizeDirectionType,
@@ -32,6 +35,7 @@ import {
 
 interface CoworkBtwFloatingPanelProps {
   thread: CoworkBtwThread;
+  promptAnchorRef?: React.RefObject<HTMLElement | null>;
   onClose: () => void;
   onDraftChange: (draft: string) => void;
   onSubmit: () => void;
@@ -94,7 +98,7 @@ const getViewport = () => ({
 });
 
 const logPanelGeometry = (
-  action: 'dragged' | 'resized',
+  action: 'opened' | 'dragged' | 'resized',
   geometry: CoworkBtwPanelGeometry,
 ): void => {
   try {
@@ -111,6 +115,7 @@ const logPanelGeometry = (
 
 const CoworkBtwFloatingPanel: React.FC<CoworkBtwFloatingPanelProps> = ({
   thread,
+  promptAnchorRef,
   onClose,
   onDraftChange,
   onSubmit,
@@ -119,7 +124,12 @@ const CoworkBtwFloatingPanel: React.FC<CoworkBtwFloatingPanelProps> = ({
 }) => {
   const [geometry, setGeometry] = useState(() => (
     typeof window === 'undefined'
-      ? { x: 16, y: 16, width: 440, height: 520 }
+      ? {
+          x: 16,
+          y: 16,
+          width: COWORK_BTW_PANEL_DEFAULT_WIDTH,
+          height: COWORK_BTW_PANEL_DEFAULT_HEIGHT,
+        }
       : getInitialCoworkBtwPanelGeometry(getViewport())
   ));
   const geometryRef = useRef(geometry);
@@ -154,11 +164,11 @@ const CoworkBtwFloatingPanel: React.FC<CoworkBtwFloatingPanelProps> = ({
         {thread.entries.map(entry => (
           <article key={entry.runId} className="space-y-2">
             <div className="flex justify-end">
-              <div className="w-fit max-w-[85%] rounded-lg bg-primary/10 px-3 py-2 text-sm whitespace-pre-wrap break-words text-foreground">
+              <div className="w-fit max-w-[85%] rounded-2xl bg-surface-raised px-3 py-2 text-sm whitespace-pre-wrap break-words text-foreground shadow-subtle">
                 {entry.question}
               </div>
             </div>
-            <div className="mr-8 rounded-lg border border-border bg-surface-raised px-3 py-2">
+            <div className="mr-8 px-1 py-1">
               {entry.status === CoworkBtwStatus.Pending && (
                 <div className="flex items-center gap-2 text-sm text-muted">
                   <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
@@ -198,13 +208,36 @@ const CoworkBtwFloatingPanel: React.FC<CoworkBtwFloatingPanelProps> = ({
     thread.entries,
   ]);
 
+  useLayoutEffect(() => {
+    if (!thread.isOpen) {
+      dragRef.current = null;
+      resizeRef.current = null;
+      return;
+    }
+    const anchorRect = promptAnchorRef?.current?.getBoundingClientRect();
+    const initialGeometry = getInitialCoworkBtwPanelGeometry(
+      getViewport(),
+      anchorRect
+        ? {
+            top: anchorRect.top,
+            right: anchorRect.right,
+            width: anchorRect.width,
+            height: anchorRect.height,
+          }
+        : undefined,
+    );
+    setGeometry(initialGeometry);
+    logPanelGeometry('opened', initialGeometry);
+  }, [promptAnchorRef, thread.isOpen, thread.sessionId]);
+
   useEffect(() => {
+    if (!thread.isOpen) return;
     const handleResize = () => {
       setGeometry(current => clampCoworkBtwPanelGeometry(current, getViewport()));
     };
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
-  }, []);
+  }, [thread.isOpen]);
 
   useEffect(() => {
     if (!thread.isOpen) return;
@@ -309,7 +342,7 @@ const CoworkBtwFloatingPanel: React.FC<CoworkBtwFloatingPanelProps> = ({
       data-cowork-btw-floating-panel
       role="dialog"
       aria-label={i18nService.t('coworkBtwWindowTitle')}
-      className="non-draggable fixed z-40 flex rounded-xl border border-border bg-surface shadow-2xl"
+      className="non-draggable fixed z-40 flex rounded-2xl border border-border bg-surface shadow-modal ring-1 ring-black/[0.03] dark:ring-white/[0.06] dark:shadow-[0_16px_50px_rgba(0,0,0,0.62)]"
       style={{
         left: geometry.x,
         top: geometry.y,
@@ -324,7 +357,7 @@ const CoworkBtwFloatingPanel: React.FC<CoworkBtwFloatingPanelProps> = ({
           onPointerMove={handleDragPointerMove}
           onPointerUp={handleDragPointerEnd}
           onPointerCancel={handleDragPointerEnd}
-          className="flex h-12 shrink-0 touch-none select-none items-center gap-2 border-b border-border bg-surface-raised px-3 cursor-move"
+          className="flex h-12 shrink-0 touch-none select-none items-center gap-2 border-b border-border-subtle bg-surface px-3 cursor-move"
         >
           <span className="h-2 w-2 shrink-0 rounded-full bg-primary" aria-hidden="true" />
           <div className="min-w-0 flex-1">
@@ -339,7 +372,7 @@ const CoworkBtwFloatingPanel: React.FC<CoworkBtwFloatingPanelProps> = ({
             type="button"
             onPointerDown={event => event.stopPropagation()}
             onClick={onClose}
-            className="shrink-0 rounded-md p-1.5 text-muted transition-colors hover:bg-surface hover:text-foreground"
+            className="shrink-0 rounded-lg p-1.5 text-muted transition-colors hover:bg-surface-raised hover:text-foreground"
             title={i18nService.t('coworkBtwCloseWindow')}
             aria-label={i18nService.t('coworkBtwCloseWindow')}
           >
@@ -350,13 +383,13 @@ const CoworkBtwFloatingPanel: React.FC<CoworkBtwFloatingPanelProps> = ({
         <div
           ref={messageListRef}
           aria-live="polite"
-          className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3"
+          className="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-surface p-3"
         >
           {renderedEntries}
         </div>
 
-        <div className="shrink-0 border-t border-border bg-surface p-3">
-          <div className="rounded-lg border border-border bg-background focus-within:border-primary/60">
+        <div className="shrink-0 border-t border-border-subtle bg-surface p-3">
+          <div className="rounded-2xl border border-border bg-background shadow-card transition-[border-color,box-shadow] duration-200 focus-within:border-primary/35 focus-within:shadow-elevated">
             <textarea
               ref={inputRef}
               value={thread.draft}
@@ -375,9 +408,9 @@ const CoworkBtwFloatingPanel: React.FC<CoworkBtwFloatingPanelProps> = ({
               maxLength={COWORK_BTW_DRAFT_MAX_CHARS}
               aria-label={i18nService.t('coworkBtwInputPlaceholder')}
               placeholder={i18nService.t('coworkBtwInputPlaceholder')}
-              className="block max-h-32 min-h-20 w-full resize-none bg-transparent px-3 py-2 text-sm text-foreground outline-none placeholder:text-muted"
+              className="block max-h-32 min-h-20 w-full resize-none bg-transparent px-4 py-3 text-sm text-foreground outline-none placeholder:text-muted"
             />
-            <div className="flex items-center justify-between gap-2 px-2 pb-2">
+            <div className="flex items-center justify-between gap-2 px-3 pb-3 pt-1">
               <span className={`text-[10px] ${
                 normalizedDraftLength > COWORK_BTW_QUESTION_MAX_CHARS
                   ? 'text-danger'
@@ -396,7 +429,11 @@ const CoworkBtwFloatingPanel: React.FC<CoworkBtwFloatingPanelProps> = ({
                   }
                 }}
                 disabled={!pendingEntry && !canSubmit}
-                className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-primary text-white transition-opacity disabled:cursor-not-allowed disabled:opacity-40"
+                className={`inline-flex h-8 w-8 items-center justify-center rounded-full transition-all ${
+                  pendingEntry || canSubmit
+                    ? 'bg-neutral-950 text-white shadow-subtle hover:bg-neutral-800 active:scale-95 dark:bg-white dark:text-neutral-950 dark:hover:bg-neutral-200'
+                    : 'cursor-not-allowed bg-neutral-300 text-white dark:bg-neutral-700 dark:text-neutral-500'
+                }`}
                 title={i18nService.t(pendingEntry ? 'coworkBtwStop' : 'coworkBtwSend')}
                 aria-label={i18nService.t(pendingEntry ? 'coworkBtwStop' : 'coworkBtwSend')}
               >

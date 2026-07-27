@@ -1941,6 +1941,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
   const artifactTabsScrollRef = useRef<HTMLDivElement>(null);
   const contentRowRef = useRef<HTMLDivElement>(null);
   const promptInputAreaRef = useRef<HTMLDivElement>(null);
+  const promptContentAnchorRef = useRef<HTMLDivElement>(null);
   const rawSessionArtifacts = useSelector((state: RootState) =>
     sessionId ? state.artifact.artifactsBySession[sessionId] ?? EMPTY_ARTIFACTS : EMPTY_ARTIFACTS
   );
@@ -5387,10 +5388,11 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
             </div>
           </div>
         )}
-        <div className={COWORK_DETAIL_CONTENT_CLASS}>
+        <div ref={promptContentAnchorRef} className={COWORK_DETAIL_CONTENT_CLASS}>
           {btwThread && (
             <CoworkBtwFloatingPanel
               thread={btwThread}
+              promptAnchorRef={promptContentAnchorRef}
               resolveLocalFilePath={resolveLocalFilePath}
               onClose={() => dispatch(closeBtwThread(btwThread.sessionId))}
               onDraftChange={draft => dispatch(setBtwDraft({

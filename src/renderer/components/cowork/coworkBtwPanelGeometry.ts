@@ -10,6 +10,13 @@ export interface CoworkBtwPanelViewport {
   height: number;
 }
 
+export interface CoworkBtwPanelAnchor {
+  top: number;
+  right: number;
+  width: number;
+  height: number;
+}
+
 export const CoworkBtwResizeDirection = {
   Top: 'top',
   TopRight: 'top-right',
@@ -24,10 +31,11 @@ export type CoworkBtwResizeDirection =
   typeof CoworkBtwResizeDirection[keyof typeof CoworkBtwResizeDirection];
 
 export const COWORK_BTW_PANEL_MARGIN = 16;
-export const COWORK_BTW_PANEL_DEFAULT_WIDTH = 440;
-export const COWORK_BTW_PANEL_DEFAULT_HEIGHT = 520;
+export const COWORK_BTW_PANEL_DEFAULT_WIDTH = 430;
+export const COWORK_BTW_PANEL_DEFAULT_HEIGHT = 450;
 export const COWORK_BTW_PANEL_MIN_WIDTH = 320;
 export const COWORK_BTW_PANEL_MIN_HEIGHT = 320;
+export const COWORK_BTW_PANEL_ANCHOR_GAP = 16;
 
 const clamp = (value: number, minimum: number, maximum: number): number => (
   Math.min(Math.max(value, minimum), maximum)
@@ -35,6 +43,18 @@ const clamp = (value: number, minimum: number, maximum: number): number => (
 
 const getAvailableSize = (value: number): number => (
   Math.max(1, value - COWORK_BTW_PANEL_MARGIN * 2)
+);
+
+const isUsableAnchor = (
+  anchor: CoworkBtwPanelAnchor | undefined,
+): anchor is CoworkBtwPanelAnchor => Boolean(
+  anchor
+  && Number.isFinite(anchor.top)
+  && Number.isFinite(anchor.right)
+  && Number.isFinite(anchor.width)
+  && Number.isFinite(anchor.height)
+  && anchor.width > 0
+  && anchor.height > 0
 );
 
 export const clampCoworkBtwPanelGeometry = (
@@ -65,12 +85,20 @@ export const clampCoworkBtwPanelGeometry = (
 
 export const getInitialCoworkBtwPanelGeometry = (
   viewport: CoworkBtwPanelViewport,
-): CoworkBtwPanelGeometry => clampCoworkBtwPanelGeometry({
-  x: viewport.width - COWORK_BTW_PANEL_DEFAULT_WIDTH - COWORK_BTW_PANEL_MARGIN,
-  y: viewport.height - COWORK_BTW_PANEL_DEFAULT_HEIGHT - COWORK_BTW_PANEL_MARGIN,
-  width: COWORK_BTW_PANEL_DEFAULT_WIDTH,
-  height: COWORK_BTW_PANEL_DEFAULT_HEIGHT,
-}, viewport);
+  anchor?: CoworkBtwPanelAnchor,
+): CoworkBtwPanelGeometry => {
+  const usableAnchor = isUsableAnchor(anchor) ? anchor : undefined;
+  return clampCoworkBtwPanelGeometry({
+    x: usableAnchor
+      ? usableAnchor.right - COWORK_BTW_PANEL_DEFAULT_WIDTH
+      : viewport.width - COWORK_BTW_PANEL_DEFAULT_WIDTH - COWORK_BTW_PANEL_MARGIN,
+    y: usableAnchor
+      ? usableAnchor.top - COWORK_BTW_PANEL_DEFAULT_HEIGHT - COWORK_BTW_PANEL_ANCHOR_GAP
+      : viewport.height - COWORK_BTW_PANEL_DEFAULT_HEIGHT - COWORK_BTW_PANEL_MARGIN,
+    width: COWORK_BTW_PANEL_DEFAULT_WIDTH,
+    height: COWORK_BTW_PANEL_DEFAULT_HEIGHT,
+  }, viewport);
+};
 
 export const resizeCoworkBtwPanelGeometry = (
   geometry: CoworkBtwPanelGeometry,
