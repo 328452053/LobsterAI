@@ -32,26 +32,98 @@ const electronBuilderConfig = JSON.parse(repoFile('electron-builder.json')) as {
   };
 };
 
-const classifyFreshTarget = ({
-  hasRegistrationEvidence,
+// TypeScript model of the NSIS install-root action planner: live registry
+// candidates (stale values are reconciled away before this decision), one
+// target enumeration, and footprint probing produce exactly one action.
+const planInstallRootAction = ({
+  liveCandidateDirs = [],
+  targetPath = 'c:/users/u/appdata/local/programs/lobsterai',
   entries,
   enumerationError,
+  footprint = false,
 }: {
-  hasRegistrationEvidence: boolean;
+  liveCandidateDirs?: string[];
+  targetPath?: string;
   entries?: string[];
   enumerationError?: number;
-}): 'fresh-install' | 'possible-existing' => {
-  if (hasRegistrationEvidence) {
-    return 'possible-existing';
-  }
+  footprint?: boolean;
+}): 'fresh-install' | 'update-in-place' | 'repair-in-place' | 'blocked-conflict' => {
+  const distinct = [...new Set(liveCandidateDirs.map((dir) => dir.toLowerCase()))];
+  let dirState: 'missing' | 'empty' | 'nonempty' | 'error';
   if (enumerationError !== undefined) {
-    return enumerationError === 2 || enumerationError === 18
-      ? 'fresh-install'
-      : 'possible-existing';
+    dirState =
+      enumerationError === 2 ? 'missing' : enumerationError === 18 ? 'empty' : 'error';
+  } else {
+    dirState = entries?.some((entry) => entry !== '.' && entry !== '..')
+      ? 'nonempty'
+      : 'empty';
   }
-  return entries?.some((entry) => entry !== '.' && entry !== '..')
-    ? 'possible-existing'
-    : 'fresh-install';
+  if (dirState === 'error') {
+    return 'blocked-conflict';
+  }
+  if (distinct.length > 1) {
+    return 'blocked-conflict';
+  }
+  if (distinct.length === 1) {
+    if (distinct[0] !== targetPath.toLowerCase()) {
+      return 'blocked-conflict';
+    }
+    if (dirState !== 'nonempty') {
+      return 'fresh-install';
+    }
+    return footprint ? 'update-in-place' : 'blocked-conflict';
+  }
+  if (dirState !== 'nonempty') {
+    return 'fresh-install';
+  }
+  return footprint ? 'repair-in-place' : 'blocked-conflict';
+};
+
+const classifyInstallLocationProbe = ({
+  attributes,
+  lastError = 0,
+}: {
+  attributes: number;
+  lastError?: number;
+}): 'live' | 'stale' | 'blocked' => {
+  if (attributes === -1) {
+    return lastError === 2 || lastError === 3 ? 'stale' : 'blocked';
+  }
+  return (attributes & 0x10) !== 0 ? 'live' : 'stale';
+};
+
+const classifyUninstallEntry = (
+  rawValue: string,
+  probe: (path: string) => { attributes: number; lastError?: number } = () => ({
+    attributes: -1,
+    lastError: 2,
+  }),
+): 'absent' | 'live' | 'stale' | 'unknown' => {
+  if (!rawValue) {
+    return 'absent';
+  }
+
+  let executablePath = rawValue;
+  let quoted = false;
+  if (!rawValue.startsWith('"')) {
+    executablePath = rawValue;
+  } else {
+    const closingQuote = rawValue.indexOf('"', 1);
+    if (closingQuote < 0) {
+      return 'unknown';
+    }
+    executablePath = rawValue.slice(1, closingQuote);
+    quoted = true;
+    if (!executablePath) {
+      return 'unknown';
+    }
+  }
+
+  const { attributes, lastError = 0 } = probe(executablePath);
+  if (attributes === -1) {
+    return quoted && (lastError === 2 || lastError === 3) ? 'stale' : 'unknown';
+  }
+  return (attributes & 0x10) === 0 ? 'live' : 'unknown';
 };
 
 describe('Windows installer hardening contracts', () => {
@@ -63,14 +135,121 @@ describe('Windows installer hardening contracts', () => {
 
     expect(switchOutPath).toBeGreaterThan(-1);
     expect(rename).toBeGreaterThan(switchOutPath);
-    expect(installerInclude).toContain('${IfNot} ${isUpdated}');
-    expect(installerInclude).toContain('"install-location-mismatch"');
-    expect(installerInclude).toContain('"ambiguous-dual-registration"');
     expect(installerInclude).toContain('phase=old-install-rename-attempt');
     expect(installerInclude).toContain('phase=old-install-rename-complete attempt_id=');
     expect(installerInclude).toContain('status=$lobsterOldInstallRenameStatus');
     expect(installerInclude).not.toContain('phase=old-install-cleanup-complete');
     expect(installerInclude).not.toContain('phase=old-install-cleanup-scheduled');
+  });
+
+  test('stages planner-approved installs without an updated-flag gate', () => {
+    const renameStart = installerInclude.indexOf('phase=old-install-rename-start');
+    const renameAttempt = installerInclude.indexOf('OldInstallRenameAttempt:');
+    const trigger = installerInclude.slice(renameStart, renameAttempt);
+
+    // The stage rename is driven by the planner action, not by the in-app
+    // --updated invocation, and re-checks the footprint right before moving.
+    expect(trigger).toContain('"action-not-staging"');
+    expect(trigger).toContain(
+      'StrCmp $lobsterInstallAction "update-in-place" OldInstallRenameActionEligible',
+    );
+    expect(trigger).toContain(
+      'StrCmp $lobsterInstallAction "repair-in-place" OldInstallRenameActionEligible',
+    );
+    expect(trigger).toContain('IfFileExists "$lobsterOldInstallOriginalPath\\${APP_EXECUTABLE_FILENAME}"');
+    expect(trigger).toContain('IfFileExists "$lobsterOldInstallOriginalPath\\${UNINSTALL_FILENAME}"');
+    expect(trigger).not.toContain('${isUpdated}');
+    expect(installerInclude).not.toContain('${IfNot} ${isUpdated}');
+    expect(installerInclude).not.toContain('"ambiguous-dual-registration"');
+    expect(installerInclude).not.toContain('"install-location-mismatch"');
+  });
+
+  test('reconciles stale registration values only when their target is gone', () => {
+    const locStart = installerInclude.indexOf('!macro LobsterPlanInstallLocationValue');
+    const locEnd = installerInclude.indexOf('!macroend', locStart);
+    const loc = installerInclude.slice(locStart, locEnd);
+    const unStart = installerInclude.indexOf('!macro LobsterPlanUninstallValue');
+    const unEnd = installerInclude.indexOf('!macroend', unStart);
+    const un = installerInclude.slice(unStart, unEnd);
+
+    // Only definitive not-found errors can authorize stale cleanup. Access
+    // denial and every other probe failure preserve the registration and
+    // select the planner's fail-closed exit.
+    expect(loc).toContain('kernel32::GetFileAttributesW(w "${VALUEVAR}") i .r4 ?e');
+    expect(loc).toContain('Pop $6');
+    expect(loc).toContain(
+      'IntCmp $6 ${LOBSTER_WIN32_ERROR_FILE_NOT_FOUND} LobsterPlanLoc${TAG}Stale',
+    );
+    expect(loc).toContain(
+      'IntCmp $6 ${LOBSTER_WIN32_ERROR_PATH_NOT_FOUND} LobsterPlanLoc${TAG}Stale',
+    );
+    expect(loc).toContain('Goto LobsterPlanRegistryProbeFailed');
+    expect(loc).not.toContain('IntCmp $4 -1 LobsterPlanLoc${TAG}Stale');
+    expect(loc).toContain('DeleteRegValue ${HIVE} "${INSTALL_REGISTRY_KEY}" InstallLocation');
+    expect(loc).toContain('state=error');
+    expect(loc).toContain('state=stale-cleanup-failed');
+
+    // A quoted command proves an exact executable path. Unquoted or malformed
+    // commands that cannot be resolved as a whole remain unknown and cannot
+    // authorize deletion of the uninstall key.
+    expect(un).toContain('Call lobsterResolveUninstallEntry');
+    expect(installerInclude).toContain(
+      'System::Call \'kernel32::GetFileAttributesW(w "$0") i .r1 ?e\'',
+    );
+    expect(installerInclude).toContain(
+      'IntCmp $2 ${LOBSTER_WIN32_ERROR_FILE_NOT_FOUND} LobsterResolveUninstallEntryStale',
+    );
+    expect(installerInclude).toContain(
+      'IntCmp $2 ${LOBSTER_WIN32_ERROR_PATH_NOT_FOUND} LobsterResolveUninstallEntryStale',
+    );
+    expect(installerInclude).toContain('target-is-directory');
+    expect(un).toContain(
+      'StrCmp $R7 "${LOBSTER_UNINSTALL_ENTRY_STALE}" LobsterPlanUn${TAG}Stale',
+    );
+    expect(un).toContain('state=unknown');
+    expect(un).toContain('Goto LobsterPlanRegistryProbeFailed');
+    expect(un).toContain('DeleteRegKey ${HIVE} "${UNINSTALL_REGISTRY_KEY}"');
+    expect(installerInclude.match(/^\s*DeleteRegValue /gm)).toHaveLength(1);
+    expect(installerInclude.match(/^\s*DeleteRegKey /gm)).toHaveLength(1);
+    expect(installerInclude).toContain('phase=stale-registration-reconciled');
+    expect(installerInclude).toContain('"stale-registration-cleanup-failed"');
+    expect(installerInclude).toContain('"fresh-stale-candidate-ignored"');
+  });
+
+  test('classifies registry probes without turning uncertainty into stale evidence', () => {
+    expect(classifyInstallLocationProbe({ attributes: 0x10 })).toBe('live');
+    expect(classifyInstallLocationProbe({ attributes: 0 })).toBe('stale');
+    expect(classifyInstallLocationProbe({ attributes: -1, lastError: 2 })).toBe('stale');
+    expect(classifyInstallLocationProbe({ attributes: -1, lastError: 3 })).toBe('stale');
+    expect(classifyInstallLocationProbe({ attributes: -1, lastError: 5 })).toBe('blocked');
+    expect(classifyInstallLocationProbe({ attributes: -1, lastError: 32 })).toBe('blocked');
+
+    const executable = String.raw`C:\Program Files\LobsterAI\Uninstall LobsterAI.exe`;
+    const executableProbe = (path: string) => ({
+      attributes: path === executable ? 0 : -1,
+      lastError: 2,
+    });
+    expect(classifyUninstallEntry(`"${executable}" /S`, executableProbe)).toBe('live');
+    expect(classifyUninstallEntry(`"${executable}" /S`)).toBe('stale');
+    expect(
+      classifyUninstallEntry(`"${executable}" /S`, () => ({
+        attributes: -1,
+        lastError: 5,
+      })),
+    ).toBe('unknown');
+    expect(
+      classifyUninstallEntry(`"${executable}" /S`, () => ({ attributes: 0x10 })),
+    ).toBe('unknown');
+    expect(classifyUninstallEntry(`${executable} /S`, executableProbe)).toBe('unknown');
+    expect(classifyUninstallEntry(`"${executable} /S`, executableProbe)).toBe('unknown');
+    const unquotedExecutable = String.raw`C:\LobsterAI\uninstall.exe`;
+    expect(
+      classifyUninstallEntry(unquotedExecutable, (path) => ({
+        attributes: path === unquotedExecutable ? 0 : -1,
+        lastError: 2,
+      })),
+    ).toBe('live');
+    expect(classifyUninstallEntry(unquotedExecutable)).toBe('unknown');
   });
 
   test('captures shortcut state and keeps old-tree execution unreachable', () => {
@@ -215,83 +394,162 @@ describe('Windows installer hardening contracts', () => {
     expect(failure).not.toContain('Goto OldInstallRenameComplete');
   });
 
-  test('classifies fresh installs before helpers and keeps existing-install fallbacks', () => {
+  test('plans the install-root action before helpers and blocks before any process stop', () => {
     const checkStart = installerInclude.indexOf('!macro customCheckAppRunning');
     const checkEnd = installerInclude.indexOf('!macro customUninstallOldVersion', checkStart);
     const check = installerInclude.slice(checkStart, checkEnd);
-    const preflight = check.indexOf('!insertmacro DetectFreshOrPossibleExisting');
+    const preflight = check.indexOf('!insertmacro PlanInstallRootAction');
+    const blocked = check.indexOf('StrCmp $lobsterInstallAction "blocked-conflict"');
     const sourceProbe = check.indexOf('phase=legacy-skills-source-preflight');
     const resolver = check.indexOf('!insertmacro ResolveTrustedPowerShell');
     const stop = check.indexOf('!insertmacro stopLobsterAIProcesses');
     const backup = check.indexOf('phase=skill-backup-complete');
 
     expect(preflight).toBeGreaterThan(-1);
+    // A blocked-conflict decision terminates the attempt before the running
+    // application is stopped or any backup helper is launched.
+    expect(blocked).toBeGreaterThan(preflight);
+    expect(blocked).toBeLessThan(sourceProbe);
     expect(sourceProbe).toBeGreaterThan(preflight);
     expect(resolver).toBeGreaterThan(sourceProbe);
     expect(stop).toBeGreaterThan(resolver);
     expect(backup).toBeGreaterThan(stop);
     expect(check).toContain(
-      'StrCmp $lobsterInstallScenario "fresh-install" CustomCheckFreshInstall',
+      'StrCmp $lobsterInstallAction "fresh-install" CustomCheckFreshInstall',
     );
+    expect(check).toContain('Call lobsterPrepareBlockedTerminalText');
+    expect(check).toContain('Call lobsterAbortOldTreeExecution');
+    expect(check).toContain('phase=install-blocked-preflight');
     expect(check).toContain('phase=fresh-install-old-flow-skipped');
     expect(check).toContain('"legacy-not-applicable-fresh-install"');
-    expect(check).toContain('"registered-install-missing"');
-    expect(check).toContain('"install-location-mismatch"');
-    expect(check).toContain('"ambiguous-dual-registration"');
+
+    const blockedSlice = check.slice(blocked, sourceProbe);
+    expect(blockedSlice).toMatch(/^\s+Return$/m);
   });
 
-  test('treats only an enumerably empty target as fresh', () => {
+  test('maps install-root evidence onto the five planner actions', () => {
+    const target = 'c:/users/u/appdata/local/programs/lobsterai';
+
+    // Fresh only for an enumerably empty/absent target with no live evidence.
+    expect(planInstallRootAction({ entries: [] })).toBe('fresh-install');
+    expect(planInstallRootAction({ entries: ['.', '..'] })).toBe('fresh-install');
+    expect(planInstallRootAction({ enumerationError: 2 })).toBe('fresh-install');
+    expect(planInstallRootAction({ enumerationError: 18 })).toBe('fresh-install');
+    expect(planInstallRootAction({ enumerationError: 5 })).toBe('blocked-conflict');
+
+    // Registered match: footprint decides between staging and blocking.
     expect(
-      classifyFreshTarget({ hasRegistrationEvidence: false, entries: [] }),
-    ).toBe('fresh-install');
-    expect(
-      classifyFreshTarget({
-        hasRegistrationEvidence: false,
-        entries: ['.', '..'],
+      planInstallRootAction({
+        liveCandidateDirs: [target],
+        entries: ['.', '..', 'LobsterAI.exe'],
+        footprint: true,
       }),
-    ).toBe('fresh-install');
+    ).toBe('update-in-place');
     expect(
-      classifyFreshTarget({
-        hasRegistrationEvidence: false,
-        entries: ['.', '..', 'leftover'],
+      planInstallRootAction({
+        liveCandidateDirs: [target.toUpperCase()],
+        entries: ['MyData'],
+        footprint: false,
       }),
-    ).toBe('possible-existing');
+    ).toBe('blocked-conflict');
     expect(
-      classifyFreshTarget({
-        hasRegistrationEvidence: true,
+      planInstallRootAction({ liveCandidateDirs: [target], entries: [] }),
+    ).toBe('fresh-install');
+
+    // Orphan trees: our footprint repairs in place, foreign content blocks.
+    expect(
+      planInstallRootAction({ entries: ['LobsterAI.exe'], footprint: true }),
+    ).toBe('repair-in-place');
+    expect(
+      planInstallRootAction({ entries: ['node_modules'], footprint: false }),
+    ).toBe('blocked-conflict');
+
+    // Relocations and distinct dual registrations fail closed.
+    expect(
+      planInstallRootAction({
+        liveCandidateDirs: ['c:/program files/lobsterai'],
         entries: [],
       }),
-    ).toBe('possible-existing');
+    ).toBe('blocked-conflict');
     expect(
-      classifyFreshTarget({
-        hasRegistrationEvidence: false,
-        enumerationError: 2,
+      planInstallRootAction({
+        liveCandidateDirs: [target, 'c:/program files/lobsterai'],
+        entries: ['.', '..', 'LobsterAI.exe'],
+        footprint: true,
       }),
-    ).toBe('fresh-install');
-    expect(
-      classifyFreshTarget({
-        hasRegistrationEvidence: false,
-        enumerationError: 18,
-      }),
-    ).toBe('fresh-install');
-    expect(
-      classifyFreshTarget({
-        hasRegistrationEvidence: false,
-        enumerationError: 5,
-      }),
-    ).toBe('possible-existing');
+    ).toBe('blocked-conflict');
 
-    const start = installerInclude.indexOf('!macro DetectFreshOrPossibleExisting');
+    const start = installerInclude.indexOf('!macro PlanInstallRootAction');
     const end = installerInclude.indexOf('!macroend', start);
-    const detector = installerInclude.slice(start, end);
-    expect(detector).toContain('FindFirst $4 $5 "$INSTDIR\\*"');
-    expect(detector).toContain('FindNext $4 $5');
-    expect(detector).toContain('StrCmp $5 "."');
-    expect(detector).toContain('StrCmp $5 ".."');
-    expect(detector).toContain('IntCmp $6 2 LobsterInstallPreflightFresh');
-    expect(detector).toContain('IntCmp $6 18 LobsterInstallPreflightFresh');
-    expect(detector).not.toContain('IfFileExists "$INSTDIR\\*"');
-    expect(detector).not.toContain('IfFileExists "$INSTDIR\\*.*"');
+    const planner = installerInclude.slice(start, end);
+    expect(planner).toContain('FindFirst $4 $5 "$INSTDIR\\*"');
+    expect(planner).toContain('FindNext $4 $5');
+    expect(planner).toContain('StrCmp $5 "."');
+    expect(planner).toContain('StrCmp $5 ".."');
+    expect(planner).toContain('IntCmp $6 2 LobsterPlanEnumMissing');
+    expect(planner).toContain('IntCmp $6 18 LobsterPlanEnumDone');
+    expect(planner).not.toContain('IfFileExists "$INSTDIR\\*"');
+    expect(planner).not.toContain('IfFileExists "$INSTDIR\\*.*"');
+    expect(planner).toContain('"update-in-place"');
+    expect(planner).toContain('"repair-in-place"');
+    expect(planner).toContain('"blocked-conflict"');
+    expect(planner).toContain('"registered-target-empty"');
+    expect(planner).toContain('"relocate-existing-install"');
+    expect(planner).toContain('"dual-registration-paths"');
+    expect(planner).toContain('"target-scan-error"');
+    expect(planner).toContain('phase=install-root-planned');
+  });
+
+  test('records blocked evidence losslessly and drops the misleading remedy copy', () => {
+    // Evidence lines carry non-ASCII paths, so they go to a UTF-16LE log.
+    const evidenceStart = installerInclude.indexOf('!macro LobsterWriteEvidenceLine');
+    const evidenceEnd = installerInclude.indexOf('!macroend', evidenceStart);
+    const evidence = installerInclude.slice(evidenceStart, evidenceEnd);
+    expect(evidence).toContain('install-evidence.log');
+    expect(evidence).toContain('FileWriteUTF16LE /BOM $9 ""');
+    expect(evidence).toContain('FileWriteUTF16LE $9 "$8 ${LINE}$\\r$\\n"');
+    expect(installerInclude).toContain('phase=install-root-entries');
+    expect(installerInclude).toContain('!macro LobsterRecordRegistryInput');
+    expect(installerInclude).toContain(
+      '!insertmacro LobsterRecordRegistryInput hkcu InstallLocation $0 hkcuLoc',
+    );
+    expect(installerInclude).toContain(
+      '!insertmacro LobsterRecordRegistryInput hklm InstallLocation $1 hklmLoc',
+    );
+    expect(installerInclude).toContain(
+      '!insertmacro LobsterRecordRegistryInput hkcu UninstallString $2 hkcuUn',
+    );
+    expect(installerInclude).toContain(
+      '!insertmacro LobsterRecordRegistryInput hklm UninstallString $3 hklmUn',
+    );
+    expect(installerInclude).toContain('phase=install-root-registry-evidence');
+    expect(installerInclude).toContain('state=absent');
+    expect(installerInclude).toContain('state=present');
+    expect(installerInclude).toContain('state=live normalized_path=[');
+    expect(installerInclude).toContain('state=error raw_path=[');
+    expect(installerInclude).toContain('state=unknown raw_path=[');
+    expect(installerInclude).toContain('registry_error=$lobsterPreflightRegistryError');
+
+    // The blocked terminal page names the blocking entries and the accurate
+    // remedy; the old "move personal files out" copy is gone in both languages.
+    expect(installerInclude).toContain('Function lobsterPrepareBlockedTerminalText');
+    expect(installerInclude).toContain('LOBSTER_INSTALL_BLOCKED_UNPROVEN_ZH');
+    expect(installerInclude).toContain('LOBSTER_INSTALL_BLOCKED_ITEMS_A_ZH');
+    expect(installerInclude).toContain('$lobsterPreflightEntrySample');
+    expect(installerInclude).not.toContain('Move personal files out');
+    expect(installerInclude).not.toContain('${U+79FB}${U+51FA}');
+
+    // Pre-composed evidence text survives the abort path unless the outcome
+    // escalates to recovery-required.
+    const abortStart = installerInclude.indexOf('Function lobsterAbortOldTreeExecution');
+    const abortEnd = installerInclude.indexOf('FunctionEnd', abortStart);
+    const abort = installerInclude.slice(abortStart, abortEnd);
+    expect(abort).toContain(
+      'StrCmp $lobsterInstallerTerminalOutcome "recovery-required" LobsterOldTreeExecutionChooseLanguageDefault',
+    );
+    expect(abort).toContain(
+      'StrCmp $lobsterInstallerTerminalText "" LobsterOldTreeExecutionChooseLanguageDefault LobsterOldTreeExecutionLog',
+    );
   });
 
   test('resolves PowerShell and tar only from trusted absolute system paths', () => {

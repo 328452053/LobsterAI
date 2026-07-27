@@ -501,6 +501,15 @@ P0.5 推荐判定顺序：
 用户明确选择权威 source 后可重新规划并只操作选中安装，另一份保持不变；
 静默模式或无法确认时不得自动删除任何一份。
 
+落地状态（2026-07-27）：上表动作映射的 P0 切片已在
+[Windows 手动安装被 P0.5 守卫全量拦截修复设计](../windows-install-manual-overwrite-blocked/2026-07-27-windows-install-manual-overwrite-blocked-fix-design.md)
+中实现：`fresh-install`、`update-in-place`、`repair-in-place`、
+stale registration reconciliation（仅对已证明不存在/非目录的目标做逐值
+清理；探测错误、不可解析命令或指向目录的卸载命令保留并 fail closed）与 `blocked-conflict`
+（含双注册不同路径、扫描失败、未归属内容）。
+`relocate-reinstall` 本切片不放行，归入 blocked-conflict 并给出指引；
+双注册同路径按 `update-in-place` 处理，暂存一次后由本次安装重新注册。
+
 ### 3.3 P0.5+ 目标状态机
 
 ```text

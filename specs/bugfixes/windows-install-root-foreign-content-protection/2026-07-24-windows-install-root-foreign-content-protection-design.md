@@ -94,6 +94,42 @@ runtime selector、安装树扫描器、lifecycle ownership rules、
 结论，因此本 spec 的 P0.5 Must 仍全部保持未勾选，destructive
 authorization 也不得启用。
 
+### 0.5 修订记录：2026-07-27 安装根动作规划器（P0 切片）
+
+止损切片在真机上暴露状态机死路：`customUninstallOldVersion` 只放行
+「真 fresh」与「`--updated` 已暂存」，手动覆盖安装 100% 阻断，卸载后
+带任何注册表/目录残留的重装同样阻断（事故与根因见
+[Windows 手动安装被 P0.5 守卫全量拦截修复设计](../windows-install-manual-overwrite-blocked/2026-07-27-windows-install-manual-overwrite-blocked-fix-design.md)）。
+经评审共识（内部 + 外部 Oracle 复核），对本节冻结边界做如下修订，
+须随实现一并通过 Windows Installer 安全评审：
+
+1. §0.1(4) 的既有 stage/rollback rename 触发面从「`--updated` 应用内
+   更新」扩展为「动作规划器判定 `update-in-place`（活注册与
+   `$INSTDIR` 一致且命中产品足迹文件）或 `repair-in-place`（无活注册
+   但目标树命中产品足迹文件）的任意安装调用」。mutation 类型不变
+   （同卷整树 rename、验证、失败回滚、隔离树保留、不清理）。
+2. §0.1(5) 不变：无法证明归属的根仍不做整树 quarantine，一律
+   mutation 前中止。足迹文件定义为顶层 `LobsterAI.exe` 或
+   `Uninstall LobsterAI.exe`。
+3. 新增注册表级 reconciliation：`InstallLocation` 只有在明确
+   `FILE_NOT_FOUND`/`PATH_NOT_FOUND`（或成功探测为非目录）时才删除该
+   注册值；其他访问错误保留原值并 fail closed。`UninstallString` 只有
+   在成功解析出精确路径且二进制不存在时才删除该根的 uninstall 注册键；
+   未加引号带参数、引号损坏等不可解析值，以及目标访问失败或目标为目录，
+   均记为 `unknown` 并保留。清理为纯注册表操作，失败即 fail closed，
+   注册表值仍不构成任何文件 mutation 授权（§0.2 信任链不变）。
+4. §3.2 阻断文案修订：删除「请先将个人文件移出安装目录」误导句，
+   blocked 终态页改为证据化文案（列出阻断条目、双注册路径或扫描错误，
+   保留打开目录入口，不提供「忽略并继续」）。
+5. 证据可观测性：preflight 必须记录四个注册值状态、目录枚举结果与
+   错误码、足迹命中与最终动作；非 ASCII 路径经 UTF-16LE 证据日志
+   （`install-evidence.log`）无损留存。
+6. 外部评审建议「以 ownership manifest + 精确删除 + 默认保留替代
+   P1 逐文件 copy-quarantine/恢复区（§5.3）」已达成方向共识：整树
+   rename 为零复制保留，恢复区复制机制边际价值有限且引入凭据/ACL
+   复制风险。该降级涉及 §5 结构性改写，待 Owner 批准后另行修订，
+   本次不改动 §5 文本。
+
 ## 1. 概述
 
 ### 1.1 问题
