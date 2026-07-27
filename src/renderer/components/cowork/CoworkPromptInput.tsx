@@ -114,6 +114,7 @@ import TrashIcon from '../icons/TrashIcon';
 import XMarkIcon from '../icons/XMarkIcon';
 import { ActiveKitBadge, KitsButton } from '../kits';
 import ModelSelector, {
+  isModelAgenticBlocked,
   ModelAccessPromptKind,
   ModelAccessPromptModal,
   type ModelSelectorChangeMeta,
@@ -646,6 +647,9 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     if (!isLoggedIn && !hasAccessibleUserModel) {
       return ModelAccessPromptKind.Login;
     }
+    if (isModelAgenticBlocked(effectiveSelectedModel)) {
+      return ModelAccessPromptKind.AgenticNotReady;
+    }
     if (
       effectiveSelectedModel?.providerKey === ProviderName.LobsteraiServer
       && effectiveSelectedModel.accessible === false
@@ -655,8 +659,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     return null;
   }, [
     availableModels,
-    effectiveSelectedModel?.accessible,
-    effectiveSelectedModel?.providerKey,
+    effectiveSelectedModel,
     isLoggedIn,
   ]);
 

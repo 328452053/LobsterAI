@@ -1,5 +1,6 @@
 import { EventEmitter } from 'events';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
@@ -9,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   quit: vi.fn(),
   relaunch: vi.fn(),
   getPath: vi.fn(),
+  fetch: vi.fn(),
 }));
 
 const cpMocks = vi.hoisted(() => ({
@@ -25,7 +27,7 @@ vi.mock('electron', () => ({
   },
   session: {
     defaultSession: {
-      fetch: vi.fn(),
+      fetch: mocks.fetch,
     },
   },
   shell: {
@@ -48,14 +50,19 @@ import { APP_UPDATE_ELEVATION_DECLINED_ERROR } from '../../shared/appUpdate/cons
 import {
   buildMacSwapInstallCommand,
   buildMacSwapPaths,
-  buildWindowsSilentInstallScript,
+  buildWindowsInstallerLaunchScript,
+  buildWindowsPowerShellCandidatePaths,
+  downloadUpdate,
   findAttachedDevEntries,
   installUpdate,
   MAC_SWAP_BACKUP_INFIX,
   MAC_SWAP_ROLLED_BACK_EXIT_CODE,
   MAC_SWAP_STAGING_INFIX,
   parseHdiutilAttachOutput,
+  resolveWindowsPowerShellPath,
+  WINDOWS_NO_DEFENDER_EXCLUSION_ARG,
   WINDOWS_UAC_DECLINED_EXIT_CODE,
+  WindowsInstallerLauncherFallback,
 } from './appUpdateInstaller';
 
 const INSTALLER_PATH = 'C:\\Users\\test\\AppData\\Roaming\\LobsterAI\\updates\\lobsterai-update-manual-1.exe';
@@ -84,6 +91,10 @@ describe('Windows update install', () => {
     cpMocks.execFile.mockReset();
     Object.defineProperty(process, 'platform', { value: 'win32' });
     vi.spyOn(fs.promises, 'stat').mockResolvedValue({ size: 1024 } as fs.Stats);
+    vi.spyOn(fs, 'lstatSync').mockReturnValue({
+      isFile: () => true,
+      isSymbolicLink: () => false,
+    } as fs.Stats);
   });
 
   afterEach(() => {
@@ -91,19 +102,29 @@ describe('Windows update install', () => {
     vi.restoreAllMocks();
   });
 
-  test('launches the silent installer through PowerShell and quits on success', async () => {
+  test('launches the update-mode installer through PowerShell and quits on success', async () => {
     mockSilentLaunchResult(null);
 
     await installUpdate(INSTALLER_PATH);
 
     expect(cpMocks.execFile).toHaveBeenCalledOnce();
     const [file, args] = cpMocks.execFile.mock.calls[0] as [string, string[]];
-    expect(file).toBe('powershell.exe');
+    expect(file).toMatch(
+      /^[A-Z]:\\Windows\\System32\\WindowsPowerShell\\v1\.0\\powershell\.exe$/i,
+    );
+    expect(file.toLowerCase()).not.toBe('powershell.exe');
     expect(args).toContain('-NoProfile');
     expect(args).toContain('-NonInteractive');
     const script = args[args.length - 1];
-    expect(script).toContain(`-FilePath '${INSTALLER_PATH}'`);
-    expect(script).toContain(`'/S','--force-run','--updated'`);
+    expect(script).toContain('-FilePath $installer');
+    expect(script).toContain('$env:LOBSTERAI_UPDATE_INSTALLER_PATH');
+    expect(script).not.toContain(INSTALLER_PATH);
+    expect(script).toContain(`'--force-run','--updated'`);
+    expect(script).not.toContain(`'/S'`);
+    const options = cpMocks.execFile.mock.calls[0]?.[2] as {
+      env?: NodeJS.ProcessEnv;
+    };
+    expect(options.env?.LOBSTERAI_UPDATE_INSTALLER_PATH).toBe(INSTALLER_PATH);
     expect(mocks.quit).toHaveBeenCalledOnce();
     // The wizard path must not run: silent launch succeeded.
     expect(mocks.openPath).not.toHaveBeenCalled();
@@ -129,16 +150,34 @@ describe('Windows update install', () => {
   });
 
   test('falls back to the interactive installer when PowerShell is unavailable', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(fs.lstatSync).mockImplementation(() => {
+      throw Object.assign(new Error('not found'), { code: 'ENOENT' });
+    });
+    mocks.openPath.mockResolvedValue('');
+
+    await installUpdate(INSTALLER_PATH);
+
+    expect(cpMocks.execFile).not.toHaveBeenCalled();
+    expect(mocks.openPath).toHaveBeenCalledWith(INSTALLER_PATH);
+    expect(mocks.quit).toHaveBeenCalledOnce();
+    expect(mocks.showItemInFolder).not.toHaveBeenCalled();
+    expect(warnSpy.mock.calls.flat().join(' ')).toContain(
+      `launcher_fallback=${WindowsInstallerLauncherFallback.WizardNoArgs}`,
+    );
+  });
+
+  test('falls back to the interactive installer when trusted PowerShell is blocked', async () => {
     mockSilentLaunchResult(
-      Object.assign(new Error('spawn powershell.exe ENOENT'), { code: 'ENOENT' }),
+      Object.assign(new Error('spawn blocked'), { code: 'EACCES' }),
     );
     mocks.openPath.mockResolvedValue('');
 
     await installUpdate(INSTALLER_PATH);
 
+    expect(cpMocks.execFile).toHaveBeenCalledOnce();
     expect(mocks.openPath).toHaveBeenCalledWith(INSTALLER_PATH);
     expect(mocks.quit).toHaveBeenCalledOnce();
-    expect(mocks.showItemInFolder).not.toHaveBeenCalled();
   });
 
   test('reveals the installer in Explorer when the fallback launch also fails', async () => {
@@ -161,21 +200,219 @@ describe('Windows update install', () => {
     expect(mocks.openPath).not.toHaveBeenCalled();
     expect(mocks.quit).not.toHaveBeenCalled();
   });
+
+  test('forwards the enterprise no-exclusion switch to the installer', async () => {
+    mockSilentLaunchResult(null);
+
+    await installUpdate(INSTALLER_PATH, { noDefenderExclusion: true });
+
+    const [, args] = cpMocks.execFile.mock.calls[0] as [string, string[]];
+    const script = args[args.length - 1];
+    expect(script).toContain(`'--force-run','--updated','${WINDOWS_NO_DEFENDER_EXCLUSION_ARG}'`);
+  });
+
+  test('omits the no-exclusion switch by default', async () => {
+    mockSilentLaunchResult(null);
+
+    await installUpdate(INSTALLER_PATH);
+
+    const [, args] = cpMocks.execFile.mock.calls[0] as [string, string[]];
+    const script = args[args.length - 1];
+    expect(script).not.toContain(WINDOWS_NO_DEFENDER_EXCLUSION_ARG);
+  });
+
+  test('passes a metacharacter-containing installer path only through the child environment', async () => {
+    const installerPath = "C:\\Users\\o'brien & team\\updates\\setup.exe";
+    mockSilentLaunchResult(null);
+
+    await installUpdate(installerPath);
+
+    const [, args, options] = cpMocks.execFile.mock.calls[0] as [
+      string,
+      string[],
+      { env?: NodeJS.ProcessEnv },
+    ];
+    expect(args.at(-1)).not.toContain(installerPath);
+    expect(options.env?.LOBSTERAI_UPDATE_INSTALLER_PATH).toBe(installerPath);
+  });
 });
 
-describe('buildWindowsSilentInstallScript', () => {
-  test('escapes single quotes in the installer path for PowerShell', () => {
-    const script = buildWindowsSilentInstallScript("C:\\Users\\o'brien\\updates\\setup.exe");
+describe('Windows PowerShell path resolution', () => {
+  test('prefers Sysnative for a 32-bit process on 64-bit Windows', () => {
+    expect(buildWindowsPowerShellCandidatePaths({
+      systemRoot: 'D:\\Windows',
+      processArch: 'ia32',
+      env: { PROCESSOR_ARCHITEW6432: 'AMD64' },
+    })).toEqual([
+      'D:\\Windows\\Sysnative\\WindowsPowerShell\\v1.0\\powershell.exe',
+      'D:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+    ]);
+  });
 
-    expect(script).toContain(`-FilePath 'C:\\Users\\o''brien\\updates\\setup.exe'`);
+  test('uses System32 directly for a native 64-bit process', () => {
+    expect(buildWindowsPowerShellCandidatePaths({
+      systemRoot: 'C:\\Windows',
+      processArch: 'x64',
+      env: {},
+    })).toEqual([
+      'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+    ]);
+  });
+
+  test('selects only a trusted existing candidate and never searches PATH', () => {
+    const inspected: string[] = [];
+    const result = resolveWindowsPowerShellPath({
+      systemRoot: 'C:\\Windows',
+      processArch: 'ia32',
+      env: {
+        PROCESSOR_ARCHITEW6432: 'AMD64',
+        PATH: 'C:\\Users\\attacker\\bin',
+      },
+      isTrustedFile: candidate => {
+        inspected.push(candidate);
+        return candidate.includes('\\System32\\');
+      },
+    });
+
+    expect(result).toBe(
+      'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+    );
+    expect(inspected).not.toContain('C:\\Users\\attacker\\bin\\powershell.exe');
+  });
+
+  test('rejects a relative SystemRoot instead of resolving it through cwd', () => {
+    expect(resolveWindowsPowerShellPath({
+      systemRoot: '..\\Windows',
+      processArch: 'x64',
+      env: {},
+      isTrustedFile: () => true,
+    })).toBeNull();
+  });
+
+  test('rejects a user-writable fake SystemRoot even when it contains a file', () => {
+    expect(resolveWindowsPowerShellPath({
+      systemRoot: 'C:\\Users\\attacker\\fake-windows',
+      processArch: 'x64',
+      env: {},
+      isTrustedFile: () => true,
+    })).toBeNull();
+  });
+});
+
+describe('buildWindowsInstallerLaunchScript', () => {
+  test('reads the installer path from an environment variable instead of script text', () => {
+    const script = buildWindowsInstallerLaunchScript();
+
+    expect(script).toContain('$env:LOBSTERAI_UPDATE_INSTALLER_PATH');
+    expect(script).toContain('-FilePath $installer');
   });
 
   test('converts a declined elevation into the dedicated exit code', () => {
-    const script = buildWindowsSilentInstallScript(INSTALLER_PATH);
+    const script = buildWindowsInstallerLaunchScript();
 
     expect(script).toContain(`$native -eq ${WINDOWS_UAC_DECLINED_EXIT_CODE}`);
     expect(script).toContain(`exit ${WINDOWS_UAC_DECLINED_EXIT_CODE}`);
     expect(script).toContain("$ErrorActionPreference = 'Stop'");
+  });
+});
+
+describe('Windows update download URL enforcement', () => {
+  const originalPlatform = process.platform;
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lobsterai-download-policy-'));
+    mocks.getPath.mockReset();
+    mocks.getPath.mockReturnValue(tmpDir);
+    mocks.fetch.mockReset();
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: originalPlatform });
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    vi.restoreAllMocks();
+  });
+
+  test('rejects an insecure input before fetching or creating a partial file', async () => {
+    await expect(downloadUpdate(
+      'http://downloads.example.com/LobsterAI.exe',
+      'manual',
+      () => {},
+    )).rejects.toThrow('update-url-untrusted');
+
+    expect(mocks.fetch).not.toHaveBeenCalled();
+    expect(fs.existsSync(path.join(tmpDir, 'updates'))).toBe(false);
+  });
+
+  test('rejects an insecure final redirect URL and leaves no cached file', async () => {
+    mocks.fetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      url: 'http://replacement-cdn.example/LobsterAI.exe',
+      headers: new Headers(),
+      body: null,
+    });
+
+    await expect(downloadUpdate(
+      'https://downloads.example.com/LobsterAI.exe',
+      'auto',
+      () => {},
+    )).rejects.toThrow('update-url-untrusted');
+
+    expect(mocks.fetch).toHaveBeenCalledOnce();
+    expect(fs.existsSync(path.join(tmpDir, 'updates'))).toBe(false);
+  });
+
+  test('fails closed when the final response URL is unavailable', async () => {
+    mocks.fetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      url: '',
+      headers: new Headers(),
+      body: null,
+    });
+
+    await expect(downloadUpdate(
+      'https://downloads.example.com/LobsterAI.exe',
+      'auto',
+      () => {},
+    )).rejects.toThrow('update-url-untrusted');
+  });
+
+  test('accepts a cross-origin HTTPS redirect and records dynamic provenance', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const bytes = new TextEncoder().encode('signed-installer-placeholder');
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(bytes);
+        controller.close();
+      },
+    });
+    mocks.fetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      url: 'https://replacement-cdn.example.net/releases/LobsterAI.exe?finalToken=do-not-log',
+      headers: new Headers({ 'content-length': String(bytes.byteLength) }),
+      body,
+    });
+
+    const result = await downloadUpdate(
+      'https://downloads.example.com/LobsterAI.exe?inputToken=do-not-log',
+      'auto',
+      () => {},
+    );
+
+    expect(fs.readFileSync(result.filePath)).toEqual(Buffer.from(bytes));
+    expect(result.windowsInstallerUrlPolicyReceipt).toEqual({
+      policyVersion: 1,
+      inputOrigin: 'https://downloads.example.com',
+      finalOrigin: 'https://replacement-cdn.example.net',
+    });
+    expect(logSpy.mock.calls.flat().join(' ')).not.toContain('do-not-log');
   });
 });
 

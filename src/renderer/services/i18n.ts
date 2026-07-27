@@ -48,18 +48,17 @@ const translations: Record<LanguageType, Record<string, string>> = {
     dark: '深色',
     system: '跟随系统',
     themeColor: '主题色',
+    themeApplyFailed: '切换外观失败，请重试',
     aiSkin: 'AI 皮肤',
-    aiSkinDescription:
-      '应用 AI 皮肤时会自动匹配推荐的深浅色主题；停用或删除后不会自动切回此前主题。',
+    aiSkinDescription: 'AI 皮肤会固定使用首次应用时匹配的主题色；选择普通主题可恢复默认外观。',
     aiSkinActive: '当前皮肤',
     aiSkinNone: '当前未应用自定义皮肤',
     aiSkinLibrary: '已生成皮肤',
     aiSkinPreviewHint: '这里展示实际背景预览；应用后会同步显示在会话首页和会话背景中。',
-    aiSkinCreationGuide:
-      '需要创作新皮肤时，可前往“专家套件”找到「LobsterAI 外观定制」，也可直接使用这里的快捷入口。',
+    aiSkinCreationGuide: '可前往“专家套件”使用「LobsterAI 外观定制」，或直接开始创作。',
     aiSkinEmpty: '还没有可用的 AI 皮肤',
     aiSkinEmptyDescription: '描述你想要的风格，AI 会生成背景、徽记和配色并自动应用。',
-    aiSkinCreate: '创作新 AI 皮肤',
+    aiSkinCreate: '开始创作',
     aiSkinStarting: '正在准备...',
     aiSkinStartFailed: '启动 AI 皮肤设计失败，请重试',
     aiSkinCurrent: '正在使用',
@@ -74,9 +73,8 @@ const translations: Record<LanguageType, Record<string, string>> = {
     aiSkinDeleteLabel: '删除皮肤“{name}”',
     aiSkinDeleteConfirmTitle: '删除 AI 皮肤？',
     aiSkinDeleteConfirmMessage: '确定要从皮肤库删除“{name}”吗？此操作无法撤销。',
-    aiSkinDeleteActiveWarning: '该皮肤正在使用；删除后会移除 AI 皮肤效果，并保留当前颜色主题。',
-    aiSkinDeleteManagedCopyNote:
-      '只会删除 LobsterAI 管理的皮肤副本，不会删除会话中的原始生成图片或卸载 AI 皮肤设计师套件。',
+    aiSkinDeleteActiveWarning: '该皮肤正在使用；删除后会恢复默认主题色。',
+    aiSkinDeleteManagedCopyNote: '只会删除 LobsterAI 管理的皮肤副本，不会删除会话中的原始生成图片或卸载 AI 皮肤设计师套件。',
     aiSkinDeleteFailed: '删除皮肤失败，请重试',
     uiFontSize: 'UI 字号',
     uiFontSizeDescription: '调整 LobsterAI 界面使用的基准字号',
@@ -156,12 +154,26 @@ const translations: Record<LanguageType, Record<string, string>> = {
     supportsThinkingOutputHint:
       '开启后会将该模型标记为可返回思考内容；实际是否产生思考取决于模型能力和自定义参数',
     contextWindow: '上下文窗口',
-    contextWindowHint:
-      '模型一次可处理的最大 token 数量，窗口越大可容纳越多对话历史与文档。较低的窗口大小可能无法体验完整功能，实际支持的窗口大小取决于模型本身。',
+    contextWindowHint: '模型一次可处理的最大 token 数量，窗口越大可容纳越多对话历史与文档。较低的窗口大小可能无法体验完整功能，实际支持的窗口大小取决于模型本身。',
+    modelCompatibilityMode: '兼容模式',
+    modelCompatibilityAuto: '自动',
+    modelCompatibilityStandard: '标准 OpenAI-compatible',
+    modelCompatibilityKimiK3: 'Kimi K3',
+    modelCompatibilityHint: '自动模式只按受信路由和精确模型 ID 启用兼容配置，不会模糊匹配模型别名。',
+    modelCompatibilityKimiK3Hint: '固定使用 Kimi K3 思考与传输配置：1M 上下文，单次回复上限 8192 token。',
+    modelCompatibilityKimiK3RequiresOpenAI: 'Kimi K3 兼容模式仅支持 OpenAI-compatible 接口，请先切换接口格式。',
+    modelCompatibilityMoonshotManaged: '该模型由 Kimi K3 官方兼容配置管理，无法在此关闭。',
+    modelCompatibilityMoonshotCustomRoute: '当前为自定义 Moonshot 路由，请明确选择“标准”或“Kimi K3”。',
     customParams: '自定义参数',
     customParamsHint:
       '以 JSON 格式填写需要透传给模型的额外参数，如 {"reasoning_effort": "high"}。这些参数将直接传递给模型 API。',
     customParamsInvalidJson: '自定义参数格式不正确，请输入合法的 JSON 对象',
+    kimiK3CustomParamsConflict: '以下参数由 Kimi K3 兼容配置管理，请从自定义参数中移除：{keys}',
+    kimiK3CustomParamsReservedHint: '思考、token 上限、流式 usage 和固定采样参数由 Kimi K3 兼容配置管理。',
+    serverModelMetadataUnavailable: '套餐模型信息暂不可用，请刷新后重试',
+    serverModelRuntimeProfileUnsupported: '套餐模型兼容配置不受支持',
+    serverModelToolCallingUnavailable: '该模型尚未开放任务工具调用',
+    serverModelAgenticNotReady: '该模型正在进行任务能力验证',
     imageInput: '图像',
     thinkingOutput: '思考',
     modelSuffixSecure: '（安全）',
@@ -972,6 +984,9 @@ const translations: Record<LanguageType, Record<string, string>> = {
     modelSelectorSubscribeTitle: '套餐模型',
     modelSelectorSubscribeDesc: '订阅套餐或购买加油包后即可使用更多模型',
     modelSelectorSubscribeBtn: '去购买',
+    modelSelectorAgenticNotReadyTitle: '任务能力验证中',
+    modelSelectorAgenticNotReadyBtn: '知道了',
+    modelSelectorAgenticVerifyingBadge: '验证中',
     modelSelectorLearnMore: '了解订阅权益',
     modelSupportsImageInputBadge: '可读图',
     modelSupportsThinkingBadge: '深度思考',
@@ -1286,6 +1301,7 @@ const translations: Record<LanguageType, Record<string, string>> = {
     coworkToolResult: '执行结果',
     coworkToolRunning: '执行中',
     coworkContextMaintenanceRunning: '正在整理上下文...',
+    coworkModelResponseWaitingLong: '模型仍在响应，请耐心等待…',
     coworkToolNoErrorDetail: '执行失败（无详细错误输出）',
     coworkToolOutputLine: '行',
     coworkToolOutputLines: '行',
@@ -1531,7 +1547,10 @@ const translations: Record<LanguageType, Record<string, string>> = {
     updateInstallIncomplete: '上次更新未完成，请重新安装',
     updateReadyHint: '点击"立即更新"后将自动完成安装并重启应用，无需手动操作',
     updateElevationDeclined: '更新需要系统授权，本次安装已取消。请重试并在系统弹窗中选择"是"',
+    updateUrlUntrusted: '更新包地址未满足 HTTPS 安全要求，已停止下载。请稍后重试或前往官网下载',
+    updateFileInvalid: '更新包文件校验失败，请重新下载',
     updateInstalledToast: '已更新至',
+    updateInstallingHint: '应用即将退出并在后台完成更新，完成后会自动启动，请稍候',
     updateRetry: '重试',
     updateCardTitle: '发现新版本',
     updateReadyCardTitle: '更新已就绪',
@@ -1687,6 +1706,7 @@ const translations: Record<LanguageType, Record<string, string>> = {
 
     // Cowork 错误消息
     coworkErrorAuthInvalid: 'API 密钥无效或已过期，请在设置中检查并更新您的 API 密钥。',
+    coworkErrorLobsterAILoginExpired: '登录状态已过期，请重新登录后继续使用 LobsterAI 套餐模型。',
     coworkErrorOAuthInvalid: 'OAuth 授权已失效或权限不足，请重新授权后重试。',
     coworkErrorModelAccessDenied: '当前账号无权访问该模型，请切换模型或检查服务商账号权限。',
     coworkErrorQuotaExhausted:
@@ -1699,11 +1719,13 @@ const translations: Record<LanguageType, Record<string, string>> = {
       '本次消息过大，请减少附件、压缩图片或拆分提交。（单次整体需小于 30MB）',
     coworkErrorCouldNotProcessPdf: '无法处理 PDF 文件。请尝试将 PDF 转换为文本格式后重新发送。',
     coworkErrorModelNotFound: '请求的模型不存在或不可用，请在设置中检查模型配置。',
-    coworkGatewaySessionSyncTimeout:
-      'OpenClaw 引擎响应缓慢，消息尚未发送。请等待 1~2 分钟后重新发送；若频繁出现，请检查系统内存与磁盘占用，并将 LobsterAI 加入杀毒软件白名单。',
+    coworkGatewaySessionSyncTimeout: 'OpenClaw 引擎响应缓慢，消息尚未发送。请等待 1~2 分钟后重新发送；若频繁出现，请检查系统内存与磁盘占用，并将 LobsterAI 加入杀毒软件白名单。',
+    coworkErrorTranscriptOversized: '该任务的历史记录过大。为保护 AI 引擎，本次消息未发送；请新建任务继续，原任务记录仍会保留。',
+    coworkErrorGatewayHeapOutOfMemory: '本地 AI 引擎内存不足并已自动重启。当前任务可能过大，请等待恢复后在新任务中继续。',
     coworkErrorGatewayDisconnected: 'AI 引擎连接中断，请重试。如果问题持续，请尝试重启应用。',
     coworkErrorServiceRestart: 'AI 引擎正在重启，请稍后重试。',
     coworkErrorGatewayDraining: 'AI 引擎正在重启中，请稍等片刻后重试。',
+    coworkErrorModelResponseTimeout: '模型响应超时，请稍后重试。',
     coworkErrorNetworkError: '网络连接失败，请检查网络设置后重试。',
     coworkErrorRateLimit: '请求过于频繁，请稍后再试。',
     coworkErrorContentFiltered: '内容未通过安全审核，请修改后重试。',
@@ -3204,20 +3226,17 @@ const translations: Record<LanguageType, Record<string, string>> = {
     dark: 'Dark',
     system: 'System',
     themeColor: 'Color Themes',
+    themeApplyFailed: 'Failed to switch appearance. Please try again.',
     aiSkin: 'AI skin',
-    aiSkinDescription:
-      'Applying an AI skin automatically selects its recommended light or dark theme. Disabling or deleting it does not switch back.',
+    aiSkinDescription: 'An AI skin keeps the color theme matched on first use. Choose a regular theme to restore the default appearance.',
     aiSkinActive: 'Active skin',
     aiSkinNone: 'No custom skin is currently active',
     aiSkinLibrary: 'Generated skins',
-    aiSkinPreviewHint:
-      'These are the actual backdrop previews. Applying one updates the home and conversation backgrounds.',
-    aiSkinCreationGuide:
-      'To create a new skin, find “Customize LobsterAI” in Expert Kits or use this shortcut.',
+    aiSkinPreviewHint: 'These are the actual backdrop previews. Applying one updates the home and conversation backgrounds.',
+    aiSkinCreationGuide: 'Use “Customize LobsterAI” in Expert Kits, or start here.',
     aiSkinEmpty: 'No AI skins are available yet',
-    aiSkinEmptyDescription:
-      'Describe the look you want. AI will create a backdrop, emblem, and coordinated colors, then apply them.',
-    aiSkinCreate: 'Create a new AI skin',
+    aiSkinEmptyDescription: 'Describe the look you want. AI will create a backdrop, emblem, and coordinated colors, then apply them.',
+    aiSkinCreate: 'Create',
     aiSkinStarting: 'Getting things ready...',
     aiSkinStartFailed: 'Failed to start AI skin design. Please try again.',
     aiSkinCurrent: 'In use',
@@ -3231,12 +3250,9 @@ const translations: Record<LanguageType, Record<string, string>> = {
     aiSkinDeleting: 'Deleting...',
     aiSkinDeleteLabel: 'Delete skin "{name}"',
     aiSkinDeleteConfirmTitle: 'Delete AI skin?',
-    aiSkinDeleteConfirmMessage:
-      'Delete "{name}" from the skin library? This action cannot be undone.',
-    aiSkinDeleteActiveWarning:
-      'This skin is in use. Deleting it removes the AI skin and keeps the current color theme.',
-    aiSkinDeleteManagedCopyNote:
-      'Only LobsterAI-managed skin copies are removed. Original images in the conversation and the AI Skin Designer kit are kept.',
+    aiSkinDeleteConfirmMessage: 'Delete "{name}" from the skin library? This action cannot be undone.',
+    aiSkinDeleteActiveWarning: 'This skin is in use. Deleting it restores the default color theme.',
+    aiSkinDeleteManagedCopyNote: 'Only LobsterAI-managed skin copies are removed. Original images in the conversation and the AI Skin Designer kit are kept.',
     aiSkinDeleteFailed: 'Failed to delete the skin. Please try again.',
     uiFontSize: 'UI font size',
     uiFontSizeDescription: 'Adjust the base size used for the LobsterAI UI',
@@ -3322,10 +3338,32 @@ const translations: Record<LanguageType, Record<string, string>> = {
     contextWindow: 'Context Window',
     contextWindowHint:
       'Maximum tokens the model can process at once. A larger window fits more conversation history and documents. A smaller window may limit features. Actual supported size depends on the model itself.',
+    modelCompatibilityMode: 'Compatibility Mode',
+    modelCompatibilityAuto: 'Auto',
+    modelCompatibilityStandard: 'Standard OpenAI-compatible',
+    modelCompatibilityKimiK3: 'Kimi K3',
+    modelCompatibilityHint:
+      'Auto enables compatibility only for trusted routes and exact model IDs. It does not fuzzy-match aliases.',
+    modelCompatibilityKimiK3Hint:
+      'Uses the fixed Kimi K3 reasoning and transport profile: 1M context and an 8,192-token response limit.',
+    modelCompatibilityKimiK3RequiresOpenAI:
+      'Kimi K3 compatibility requires the OpenAI-compatible API format. Switch the API format first.',
+    modelCompatibilityMoonshotManaged:
+      'This model is managed by the official Kimi K3 compatibility profile and cannot be disabled here.',
+    modelCompatibilityMoonshotCustomRoute:
+      'This is a custom Moonshot route. Explicitly choose Standard or Kimi K3.',
     customParams: 'Custom Params',
     customParamsHint:
       'Extra parameters to pass through to the model API in JSON format, e.g. {"reasoning_effort": "high"}.',
     customParamsInvalidJson: 'Invalid JSON format. Please enter a valid JSON object.',
+    kimiK3CustomParamsConflict:
+      'These parameters are managed by the Kimi K3 compatibility profile. Remove them from Custom Params: {keys}',
+    kimiK3CustomParamsReservedHint:
+      'Kimi K3 compatibility manages reasoning, token limits, streaming usage, and fixed sampling parameters.',
+    serverModelMetadataUnavailable: 'Package model information is temporarily unavailable. Refresh and try again.',
+    serverModelRuntimeProfileUnsupported: 'The package model compatibility profile is not supported.',
+    serverModelToolCallingUnavailable: 'Task tool calling is not yet available for this model.',
+    serverModelAgenticNotReady: 'This model is still undergoing task capability validation.',
     imageInput: 'Image',
     thinkingOutput: 'Thinking',
     modelSuffixSecure: '(Secure)',
@@ -4199,6 +4237,9 @@ const translations: Record<LanguageType, Record<string, string>> = {
     modelSelectorSubscribeTitle: 'Plan Models',
     modelSelectorSubscribeDesc: 'Subscribe or purchase a booster pack to unlock more models',
     modelSelectorSubscribeBtn: 'Purchase',
+    modelSelectorAgenticNotReadyTitle: 'Task capability validation in progress',
+    modelSelectorAgenticNotReadyBtn: 'Got it',
+    modelSelectorAgenticVerifyingBadge: 'Verifying',
     modelSelectorLearnMore: 'Learn about subscription',
     modelSupportsImageInputBadge: 'Reads images',
     modelSupportsThinkingBadge: 'Deep thinking',
@@ -4546,6 +4587,7 @@ const translations: Record<LanguageType, Record<string, string>> = {
     coworkToolResult: 'Result',
     coworkToolRunning: 'Running...',
     coworkContextMaintenanceRunning: 'Organizing context...',
+    coworkModelResponseWaitingLong: 'The model is still responding. This may take a little longer…',
     coworkToolNoErrorDetail: 'Failed (no error details)',
     coworkToolOutputLine: 'line',
     coworkToolOutputLines: 'lines',
@@ -4796,11 +4838,12 @@ const translations: Record<LanguageType, Record<string, string>> = {
     updateDownloadFailed: 'Download failed',
     updateInstallFailed: 'Installation failed',
     updateInstallIncomplete: 'The previous update did not finish. Please install it again.',
-    updateReadyHint:
-      'The update installs automatically and the app restarts itself — no manual steps needed.',
-    updateElevationDeclined:
-      'The update needs system authorization and was cancelled. Try again and choose Yes in the system prompt.',
+    updateReadyHint: 'The update installs automatically and the app restarts itself — no manual steps needed.',
+    updateElevationDeclined: 'The update needs system authorization and was cancelled. Try again and choose Yes in the system prompt.',
+    updateUrlUntrusted: 'The update URL did not meet the HTTPS safety requirements, so the download was stopped. Try again later or use the official download page.',
+    updateFileInvalid: 'The update file failed validation. Download it again.',
     updateInstalledToast: 'Updated to',
+    updateInstallingHint: 'The app will close and finish updating in the background, then relaunch automatically.',
     updateRetry: 'Retry',
     updateCardTitle: 'Update available',
     updateReadyCardTitle: 'Update ready',
@@ -4968,6 +5011,8 @@ const translations: Record<LanguageType, Record<string, string>> = {
     // Cowork error messages
     coworkErrorAuthInvalid:
       'Invalid or expired API key. Please check and update your API key in settings.',
+    coworkErrorLobsterAILoginExpired:
+      'Your login session has expired. Sign in again to continue using LobsterAI plan models.',
     coworkErrorOAuthInvalid:
       'OAuth authorization is invalid or missing required access. Re-authenticate and try again.',
     coworkErrorModelAccessDenied:
@@ -4987,10 +5032,15 @@ const translations: Record<LanguageType, Record<string, string>> = {
       'The requested model does not exist or is unavailable. Please check the model configuration in settings.',
     coworkGatewaySessionSyncTimeout:
       'The OpenClaw engine is responding slowly and your message has not been sent. Please wait a minute or two and resend. If this happens frequently, check system memory and disk usage, and add LobsterAI to your antivirus allowlist.',
+    coworkErrorTranscriptOversized:
+      'This task history is too large. The message was not sent to protect the AI engine. Continue in a new task; the original task will be preserved.',
+    coworkErrorGatewayHeapOutOfMemory:
+      'The local AI engine ran out of memory and is restarting automatically. This task may be too large; wait for recovery and continue in a new task.',
     coworkErrorGatewayDisconnected:
       'AI engine connection lost. Please retry. If the issue persists, try restarting the app.',
     coworkErrorServiceRestart: 'AI engine is restarting. Please try again later.',
     coworkErrorGatewayDraining: 'AI engine is restarting. Please wait a moment and try again.',
+    coworkErrorModelResponseTimeout: 'The model response timed out. Please try again.',
     coworkErrorNetworkError:
       'Network connection failed. Please check your network settings and try again.',
     coworkErrorRateLimit: 'Too many requests. Please try again later.',

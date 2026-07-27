@@ -10,7 +10,11 @@ import {
   AsrIpcChannel,
   type AsrRealtimeSessionRequest,
 } from '../shared/asr/constants';
-import { AuthIpcChannel } from '../shared/auth/constants';
+import {
+  AuthIpcChannel,
+  type AuthLifecycleEvent,
+  type AuthSessionChangedEvent,
+} from '../shared/auth/constants';
 import { BrowserIpc, type BrowserRuntimeProfile } from '../shared/browserWebAccess/constants';
 import { ClipboardIpc } from '../shared/clipboard/constants';
 import type { CoworkBrowserAnnotationMessageBatch } from '../shared/cowork/browserAnnotations';
@@ -64,6 +68,7 @@ import {
 import { SkinIpc } from '../shared/skin/constants';
 import type {
   SkinApplyResponse,
+  SkinBindThemeResponse,
   SkinDeactivateResponse,
   SkinDeleteResponse,
   SkinGetActiveResponse,
@@ -153,7 +158,10 @@ contextBridge.exposeInMainWorld('electron', {
   skin: {
     getActive: (): Promise<SkinGetActiveResponse> => ipcRenderer.invoke(SkinIpc.GetActive),
     list: (): Promise<SkinListResponse> => ipcRenderer.invoke(SkinIpc.List),
-    apply: (skinId: string): Promise<SkinApplyResponse> => ipcRenderer.invoke(SkinIpc.Apply, skinId),
+    apply: (skinId: string, boundThemeId?: string): Promise<SkinApplyResponse> =>
+      ipcRenderer.invoke(SkinIpc.Apply, skinId, boundThemeId),
+    bindTheme: (skinId: string, themeId: string): Promise<SkinBindThemeResponse> =>
+      ipcRenderer.invoke(SkinIpc.BindTheme, skinId, themeId),
     deactivate: (): Promise<SkinDeactivateResponse> => ipcRenderer.invoke(SkinIpc.Deactivate),
     delete: (skinId: string): Promise<SkinDeleteResponse> => ipcRenderer.invoke(SkinIpc.Delete, skinId),
     onChanged: (callback: () => void) => {
@@ -1095,19 +1103,19 @@ contextBridge.exposeInMainWorld('electron', {
   },
   auth: {
     login: (loginUrl?: string) => ipcRenderer.invoke(AuthIpcChannel.Login, { loginUrl }),
-    exchange: (code: string) => ipcRenderer.invoke('auth:exchange', { code }),
-    getUser: () => ipcRenderer.invoke('auth:getUser'),
-    getQuota: () => ipcRenderer.invoke('auth:getQuota'),
-    logout: () => ipcRenderer.invoke('auth:logout'),
-    refreshToken: () => ipcRenderer.invoke('auth:refreshToken'),
-    getAccessToken: () => ipcRenderer.invoke('auth:getAccessToken'),
-    getModels: () => ipcRenderer.invoke('auth:getModels'),
+    exchange: (code: string) => ipcRenderer.invoke(AuthIpcChannel.Exchange, { code }),
+    getUser: () => ipcRenderer.invoke(AuthIpcChannel.GetUser),
+    getQuota: () => ipcRenderer.invoke(AuthIpcChannel.GetQuota),
+    logout: () => ipcRenderer.invoke(AuthIpcChannel.Logout),
+    refreshToken: () => ipcRenderer.invoke(AuthIpcChannel.RefreshToken),
+    getAccessToken: () => ipcRenderer.invoke(AuthIpcChannel.GetAccessToken),
+    getModels: () => ipcRenderer.invoke(AuthIpcChannel.GetModels),
     getPricingCatalog: () => ipcRenderer.invoke(AuthIpcChannel.GetPricingCatalog),
-    getProfileSummary: () => ipcRenderer.invoke('auth:getProfileSummary'),
+    getProfileSummary: () => ipcRenderer.invoke(AuthIpcChannel.GetProfileSummary),
     claimCreditsFinalReward: (campaignCode: string) =>
-      ipcRenderer.invoke('auth:claimCreditsFinalReward', { campaignCode }),
-    getActiveClientBanner: () => ipcRenderer.invoke('auth:getActiveClientBanner'),
-    getActiveClientBanners: () => ipcRenderer.invoke('auth:getActiveClientBanners'),
+      ipcRenderer.invoke(AuthIpcChannel.ClaimCreditsFinalReward, { campaignCode }),
+    getActiveClientBanner: () => ipcRenderer.invoke(AuthIpcChannel.GetActiveClientBanner),
+    getActiveClientBanners: () => ipcRenderer.invoke(AuthIpcChannel.GetActiveClientBanners),
     getPendingCallback: () => ipcRenderer.invoke(AuthIpcChannel.GetPendingCallback),
     onCallback: (callback: (data: { code: string }) => void) => {
       const handler = (_event: any, data: { code: string }) => callback(data);
@@ -1116,8 +1124,18 @@ contextBridge.exposeInMainWorld('electron', {
     },
     onQuotaChanged: (callback: () => void) => {
       const handler = () => callback();
-      ipcRenderer.on('auth:quotaChanged', handler);
-      return () => ipcRenderer.removeListener('auth:quotaChanged', handler);
+      ipcRenderer.on(AuthIpcChannel.QuotaChanged, handler);
+      return () => ipcRenderer.removeListener(AuthIpcChannel.QuotaChanged, handler);
+    },
+    onSessionChanged: (callback: (event: AuthSessionChangedEvent) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, data: AuthSessionChangedEvent) => callback(data);
+      ipcRenderer.on(AuthIpcChannel.SessionChanged, handler);
+      return () => ipcRenderer.removeListener(AuthIpcChannel.SessionChanged, handler);
+    },
+    onLifecycleEvent: (callback: (event: AuthLifecycleEvent) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, data: AuthLifecycleEvent) => callback(data);
+      ipcRenderer.on(AuthIpcChannel.LifecycleEvent, handler);
+      return () => ipcRenderer.removeListener(AuthIpcChannel.LifecycleEvent, handler);
     },
   },
   media: {
