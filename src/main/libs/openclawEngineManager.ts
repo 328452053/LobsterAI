@@ -13,6 +13,7 @@ import {
   OpenClawGatewayFailureKind,
   type OpenClawGatewayFailureSnapshot,
 } from '../../shared/openclawEngine/constants';
+import { t } from '../i18n';
 import { ensureElectronNodeShim, getElectronNodeRuntimePath, getSkillsRoot } from './coworkUtil';
 import {
   formatGatewayLogDateKey,
@@ -27,6 +28,12 @@ import { getCodexHomeDir } from './openaiCodexAuth';
 import { migrateLegacyCronStorageWithDoctor } from './openclawCronLegacyMigration';
 import { cleanupStaleThirdPartyPluginsFromBundledDir, listLocalOpenClawExtensionIds,syncLocalOpenClawExtensionsIntoRuntime } from './openclawLocalExtensions';
 import { migrateAllFtsOnlyMemoryIndexes } from './openclawMemoryIndexMigration';
+import {
+  readOpenClawRuntimeBuildInfo,
+  readOpenClawRuntimeContractExpectation,
+  validateOpenClawManagedConfig,
+  validateOpenClawRuntimeContract,
+} from './openclawRuntimeContract';
 import { ensureOpenClawWorkerShims } from './openclawWorkerShims';
 import { appendPythonRuntimeToEnv } from './pythonRuntime';
 
@@ -396,10 +403,98 @@ export class OpenClawEngineManager extends EventEmitter {
     };
   }
 
-  async ensureReady(_options: { forceReinstall?: boolean } = {}): Promise<OpenClawEngineStatus> {
+  private async stopTrackedGatewayForRuntimeGateFailure(reason: string): Promise<void> {
+    if (this.gatewayRestartTimer) {
+      clearTimeout(this.gatewayRestartTimer);
+      this.gatewayRestartTimer = null;
+    }
+
+    const gatewayProcess = this.gatewayProcess;
+    if (isGatewayProcessAlive(gatewayProcess)) {
+      console.warn(
+        `[OpenClaw] stopping the existing gateway after runtime gate failure (${reason})`,
+      );
+      await this.stopGatewayProcess(gatewayProcess);
+    }
+    if (this.gatewayProcess === gatewayProcess) {
+      this.gatewayProcess = null;
+    }
+  }
+
+  /**
+   * Validate only the immutable runtime identity used by the current app.
+   *
+   * Returns null when the version/contract pair matches. On failure it
+   * fail-closes the engine status and stops any tracked Gateway, without
+   * running extension sync or plugin cleanup.
+   */
+  async validateRuntimeContractGate(): Promise<OpenClawEngineStatus | null> {
     const runtime = this.resolveRuntimeMetadata();
     this.desiredVersion = runtime.version || DEFAULT_OPENCLAW_VERSION;
 
+    if (!runtime.root) {
+      await this.stopTrackedGatewayForRuntimeGateFailure('runtime_missing');
+      this.setStatus({
+        phase: 'not_installed',
+        version: null,
+        message: `Bundled OpenClaw runtime is missing. Expected: ${runtime.expectedPathHint}`,
+        canRetry: true,
+      });
+      return this.getStatus();
+    }
+
+    const contractValidation = validateOpenClawRuntimeContract(
+      readOpenClawRuntimeContractExpectation(app.getAppPath()),
+      readOpenClawRuntimeBuildInfo(runtime.root),
+    );
+    if (contractValidation.ok === false) {
+      console.error('[OpenClaw] runtime contract validation failed', {
+        reason: contractValidation.reason,
+        expectedVersion: contractValidation.expected?.openclawVersion ?? null,
+        actualVersion: contractValidation.actual?.openclawVersion ?? null,
+        expectedContract: contractValidation.expected?.runSafetyContract ?? null,
+        actualContract: contractValidation.actual?.runSafetyContract ?? null,
+      });
+      await this.stopTrackedGatewayForRuntimeGateFailure(contractValidation.reason);
+      this.setStatus({
+        phase: 'error',
+        version: runtime.version,
+        message: t(
+          app.isPackaged
+            ? 'openClawRuntimeContractMismatchPackaged'
+            : 'openClawRuntimeContractMismatchDev',
+          {
+            expectedVersion: contractValidation.expected?.openclawVersion ?? 'unknown',
+            expectedContract: contractValidation.expected?.runSafetyContract ?? 'unknown',
+          },
+        ),
+        errorCode: OpenClawEngineErrorCode.RuntimeContractMismatch,
+        canRetry: true,
+      });
+      return this.getStatus();
+    }
+
+    return null;
+  }
+
+  async ensureReady(_options: { forceReinstall?: boolean } = {}): Promise<OpenClawEngineStatus> {
+    const contractFailureStatus = await this.validateRuntimeContractGate();
+    if (contractFailureStatus) {
+      return contractFailureStatus;
+    }
+
+    // A prepared or active Gateway only needs the lightweight contract gate
+    // above. Extension sync and stale-plugin cleanup are one-time startup
+    // maintenance, not work to repeat during the following spawn or per task.
+    if (
+      this.status.phase === 'ready'
+      || this.status.phase === 'running'
+      || this.status.phase === 'starting'
+    ) {
+      return this.getStatus();
+    }
+
+    const runtime = this.resolveRuntimeMetadata();
     if (!runtime.root) {
       this.setStatus({
         phase: 'not_installed',
@@ -432,10 +527,6 @@ export class OpenClawEngineManager extends EventEmitter {
       }
     } catch {
       // Best-effort cleanup; don't block startup.
-    }
-
-    if (this.status.phase === 'running') {
-      return this.getStatus();
     }
 
     this.setStatus({
@@ -514,6 +605,21 @@ export class OpenClawEngineManager extends EventEmitter {
       return this.getStatus();
     }
 
+    const configValidation = validateOpenClawManagedConfig(this.configPath);
+    if (configValidation.ok === false) {
+      console.error('[OpenClaw] managed config validation failed before gateway spawn', {
+        reason: configValidation.reason,
+      });
+      this.setStatus({
+        phase: 'error',
+        version: runtime.version,
+        message: t('openClawRuntimeConfigMismatch'),
+        errorCode: OpenClawEngineErrorCode.RuntimeConfigMismatch,
+        canRetry: true,
+      });
+      return this.getStatus();
+    }
+
     this.ensureBareEntryFiles(runtime.root);
     console.log(`[OpenClaw] startGateway: ensureBareEntryFiles done (${elapsed()})`);
     const openclawEntry = this.resolveOpenClawEntry(runtime.root);
@@ -535,7 +641,6 @@ export class OpenClawEngineManager extends EventEmitter {
     console.log(`[OpenClaw] startGateway: resolveGatewayPort done (${elapsed()}), port=${port}`);
     this.gatewayPort = port;
     this.writeGatewayPort(port);
-    this.ensureConfigFile();
     console.log(`[OpenClaw] startGateway: pre-fork setup done (${elapsed()})`);
 
     this.setStatus({
@@ -1353,25 +1458,6 @@ export class OpenClawEngineManager extends EventEmitter {
       return token || null;
     } catch {
       return null;
-    }
-  }
-
-  private ensureConfigFile(): void {
-    ensureDir(path.dirname(this.configPath));
-    if (!fs.existsSync(this.configPath)) {
-      fs.writeFileSync(this.configPath, JSON.stringify({ gateway: { mode: 'local' } }, null, 2) + '\n', 'utf8');
-      return;
-    }
-    // Ensure gateway.mode is set even if config already exists
-    try {
-      const raw = fs.readFileSync(this.configPath, 'utf8');
-      const config = JSON.parse(raw);
-      if (!config.gateway?.mode) {
-        config.gateway = { ...config.gateway, mode: 'local' };
-        fs.writeFileSync(this.configPath, JSON.stringify(config, null, 2) + '\n', 'utf8');
-      }
-    } catch {
-      // ignore parse errors
     }
   }
 

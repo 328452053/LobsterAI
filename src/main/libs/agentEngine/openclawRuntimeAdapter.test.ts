@@ -4692,7 +4692,7 @@ test('an unscoped channel safety terminal without an envelope run id is rejected
   );
 });
 
-test('run-safety terminal cancels pending recovery timers without retry or error fallback', async () => {
+test('legacy receive-only prompt exposure terminal cancels recovery without retry', async () => {
   vi.useFakeTimers();
   try {
     const { adapter, session, sessionKey, turn } = createRunSafetyAdapter();
@@ -4737,7 +4737,7 @@ test('run-safety terminal cancels pending recovery timers without retry or error
   }
 });
 
-test('persisted safety metadata deduplicates a replay after adapter restart', () => {
+test('persisted legacy prompt-estimate terminal deduplicates after adapter restart', () => {
   const terminationReason = createRunSafetyTermination(
     RunSafetyTerminationKind.RunPromptEstimateUnavailable,
   );

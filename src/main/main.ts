@@ -1960,6 +1960,21 @@ const bootstrapOpenClawEngine = async (
     try {
       console.log(`[OpenClaw] bootstrap starting (reason=${reason})`);
 
+      if (options.forceReinstall) {
+        console.log(
+          `${gwDiagTs()} bootstrap: forceReinstall requested, stopping gateway before runtime validation`,
+        );
+        await manager.stopGateway();
+        console.log(`[OpenClaw] bootstrap: stopGateway done (${elapsed()})`);
+      }
+      const ensuredStatus = await manager.ensureReady();
+      console.log(
+        `[OpenClaw] bootstrap: ensureReady done (${elapsed()}), phase=${ensuredStatus.phase}`,
+      );
+      if (ensuredStatus.phase !== 'ready' && ensuredStatus.phase !== 'running') {
+        return ensuredStatus;
+      }
+
       // Start AskUser HTTP server before config sync
       await startAskUserServer().catch((err: unknown) => {
         console.error(`[OpenClaw] bootstrap: AskUser server startup failed (non-fatal):`, err);
@@ -1984,20 +1999,6 @@ const bootstrapOpenClawEngine = async (
       );
       if (!syncResult.success) {
         return syncResult.status || manager.getStatus();
-      }
-      if (options.forceReinstall) {
-        console.log(
-          `${gwDiagTs()} bootstrap: forceReinstall requested, stopping gateway before reinstall`,
-        );
-        await manager.stopGateway();
-        console.log(`[OpenClaw] bootstrap: stopGateway done (${elapsed()})`);
-      }
-      const ensuredStatus = await manager.ensureReady();
-      console.log(
-        `[OpenClaw] bootstrap: ensureReady done (${elapsed()}), phase=${ensuredStatus.phase}`,
-      );
-      if (ensuredStatus.phase !== 'ready' && ensuredStatus.phase !== 'running') {
-        return ensuredStatus;
       }
       const result = await manager.startGateway(`bootstrap:${reason}`);
       console.log(`[OpenClaw] bootstrap completed (${elapsed()}), phase=${result.phase}`);
@@ -2028,15 +2029,31 @@ const ensureOpenClawRunningForCowork = async () => {
   }
 
   const manager = getOpenClawEngineManager();
-  const status = manager.getStatus();
-  if (status.phase === 'running') {
+  const contractFailureStatus = await manager.validateRuntimeContractGate();
+  if (contractFailureStatus) {
+    return contractFailureStatus;
+  }
+  const currentStatus = manager.getStatus();
+  if (currentStatus.phase === 'running') {
     // Token proxy handles dynamic token injection — no need to restart
     // the gateway for token changes. Just wait for any in-flight refresh.
     await waitForPendingTokenRefresh();
     return manager.getStatus();
   }
-  if (status.phase === 'starting') {
-    return status;
+  if (currentStatus.phase === 'starting') {
+    return currentStatus;
+  }
+
+  const preparedStatus = await manager.ensureReady();
+  if (preparedStatus.phase === 'running') {
+    await waitForPendingTokenRefresh();
+    return manager.getStatus();
+  }
+  if (preparedStatus.phase === 'starting') {
+    return preparedStatus;
+  }
+  if (preparedStatus.phase !== 'ready') {
+    return preparedStatus;
   }
 
   // Wait for any in-flight token refresh so that the gateway starts with
@@ -2054,9 +2071,10 @@ const ensureOpenClawRunningForCowork = async () => {
   });
   if (!syncResult.success) {
     console.error('[OpenClaw] ensureRunning: config sync failed:', syncResult.error);
+    return syncResult.status || manager.getStatus();
   }
 
-  console.log(`${gwDiagTs()} ensureRunning: gateway not running (phase=${status.phase}), starting`);
+  console.log(`${gwDiagTs()} ensureRunning: gateway not running (phase=${preparedStatus.phase}), starting`);
   return await manager.startGateway('ensure-running-for-cowork');
 };
 
@@ -12098,30 +12116,46 @@ if (!gotTheLock) {
       console.warn('[OpenClaw] main agent workspace migration failed (non-fatal):', err);
     }
 
-    profiler.mark('syncOpenClawConfig');
-    const startupSync = await syncOpenClawConfig({
-      reason: 'startup',
-      restartGatewayIfRunning: false,
-    });
-    if (!startupSync.success) {
-      console.error('[OpenClaw] Startup config sync failed:', startupSync.error);
-    }
-    profiler.measure('syncOpenClawConfig');
-    void ensureOpenClawRunningForCowork()
-      .then(() => {
-        // Start cron polling once the gateway is confirmed running.
-        try {
-          getCronJobService().startPolling();
-        } catch (err) {
-          console.warn('[Main] CronJobService not available after OpenClaw startup:', err);
-        }
-        void migrateScheduledTaskAnnounceJobs(scheduledTaskHandlerDeps).catch(err => {
-          console.warn('[Main] Scheduled task IM announce job migration failed:', err);
-        });
-      })
-      .catch(error => {
-        console.error('[OpenClaw] Failed to auto-start gateway on app startup:', error);
+    profiler.mark('ensureOpenClawRuntimeContract');
+    const startupRuntimeStatus = await getOpenClawEngineManager().ensureReady();
+    profiler.measure('ensureOpenClawRuntimeContract');
+    if (
+      startupRuntimeStatus.phase === 'ready'
+      || startupRuntimeStatus.phase === 'running'
+    ) {
+      profiler.mark('syncOpenClawConfig');
+      const startupSync = await syncOpenClawConfig({
+        reason: 'startup',
+        restartGatewayIfRunning: false,
       });
+      if (!startupSync.success) {
+        console.error('[OpenClaw] Startup config sync failed:', startupSync.error);
+      }
+      profiler.measure('syncOpenClawConfig');
+      if (startupSync.success) {
+        void ensureOpenClawRunningForCowork()
+          .then((engineStatus) => {
+            if (engineStatus.phase !== 'running') return;
+            // Start cron polling once the gateway is confirmed running.
+            try {
+              getCronJobService().startPolling();
+            } catch (err) {
+              console.warn('[Main] CronJobService not available after OpenClaw startup:', err);
+            }
+            void migrateScheduledTaskAnnounceJobs(scheduledTaskHandlerDeps).catch(err => {
+              console.warn('[Main] Scheduled task IM announce job migration failed:', err);
+            });
+          })
+          .catch(error => {
+            console.error('[OpenClaw] Failed to auto-start gateway on app startup:', error);
+          });
+      }
+    } else {
+      console.error(
+        '[OpenClaw] Startup blocked before config sync:',
+        startupRuntimeStatus.errorCode || startupRuntimeStatus.phase,
+      );
+    }
 
     // ── Step 1: Show window ASAP ──────────────────────────────────────
     // CSP + createWindow moved before skill initialisation so the user

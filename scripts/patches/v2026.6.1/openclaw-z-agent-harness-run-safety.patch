@@ -2,7 +2,7 @@ diff --git a/extensions/codex/harness.ts b/extensions/codex/harness.ts
 index 9486a5db2..d2d416cc4 100644
 --- a/extensions/codex/harness.ts
 +++ b/extensions/codex/harness.ts
-@@ -1,6 +1,9 @@
+@@ -1,4 +1,7 @@
 -import type {
 -  AgentHarness,
 -  ContextEngineHostCapability,
@@ -13,48 +13,35 @@ index 9486a5db2..d2d416cc4 100644
 +  type AgentHarnessRunSafetyDispatchV1,
 +  type ContextEngineHostCapability,
  } from "openclaw/plugin-sdk/agent-harness-runtime";
- import type {
-   CodexAppServerListModelsOptions,
-@@ -50,13 +53,14 @@ export function createCodexAppServerAgentHarness(options?: {
-         reason: `provider is not one of: ${[...providerIds].toSorted().join(", ")}`,
-       };
+@@ -52,3 +55,3 @@ export function createCodexAppServerAgentHarness(options?: {
      },
 -    runAttempt: async (params) => {
 +    runAttemptV1: createAgentHarnessRunAttemptV1(async (params, host) => {
        const { runCodexAppServerAttempt } = await import("./src/app-server/run-attempt.js");
-       return runCodexAppServerAttempt(params, {
-         pluginConfig: options?.resolvePluginConfig?.() ?? options?.pluginConfig,
+@@ -57,4 +60,5 @@ export function createCodexAppServerAgentHarness(options?: {
          nativeHookRelay: { enabled: true },
 +        runSafetyDispatch: host.dispatch,
        });
 -    },
 +    }),
      runSideQuestion: async (params) => {
-       const { runCodexAppServerSideQuestion } = await import("./src/app-server/side-question.js");
-       return runCodexAppServerSideQuestion(params, {
-@@ -64,12 +68,13 @@ export function createCodexAppServerAgentHarness(options?: {
-         nativeHookRelay: { enabled: true },
-       });
+@@ -66,3 +70,3 @@ export function createCodexAppServerAgentHarness(options?: {
      },
 -    compact: async (params) => {
 +    compactV1: createAgentHarnessCompactV1(async (params, host) => {
        const { maybeCompactCodexAppServerSession } = await import("./src/app-server/compact.js");
-       return maybeCompactCodexAppServerSession(params, {
+@@ -70,4 +74,5 @@ export function createCodexAppServerAgentHarness(options?: {
          pluginConfig: options?.resolvePluginConfig?.() ?? options?.pluginConfig,
 +        runSafetyDispatch: host.dispatch as AgentHarnessRunSafetyDispatchV1,
        });
 -    },
 +    }),
      reset: async (params) => {
-       if (params.sessionFile) {
-         const { clearCodexAppServerBinding } = await import("./src/app-server/session-binding.js");
 diff --git a/extensions/codex/index.test.ts b/extensions/codex/index.test.ts
 index 27cb7517b..0024cb6db 100644
 --- a/extensions/codex/index.test.ts
 +++ b/extensions/codex/index.test.ts
-@@ -22,6 +22,24 @@ function mockCallArg(mock: { mock: { calls: unknown[][] } }, index = 0, argIndex
-   return mockCall(mock, index)?.at(argIndex);
- }
+@@ -24,2 +24,20 @@ function mockCallArg(mock: { mock: { calls: unknown[][] } }, index = 0, argIndex
  
 +const TEST_RUN_SAFETY_HOST = {
 +  contractVersion: 1 as const,
@@ -75,54 +62,33 @@ index 27cb7517b..0024cb6db 100644
 +}
 +
  describe("codex plugin", () => {
-   it("is opt-in by default", () => {
-     const manifest = JSON.parse(
-@@ -145,13 +163,14 @@ describe("codex plugin", () => {
-     const result = { success: true };
-     runCodexAppServerAttemptMock.mockResolvedValueOnce(result);
+@@ -147,3 +165,3 @@ describe("codex plugin", () => {
  
 -    await expect(harness.runAttempt({ prompt: "hello" } as never)).resolves.toBe(result);
 +    await expect(runHarnessAttempt(harness, { prompt: "hello" } as never)).resolves.toBe(result);
  
-     expect(runCodexAppServerAttemptMock).toHaveBeenCalledWith(
-       { prompt: "hello" },
-       {
-         pluginConfig: { appServer: {} },
+@@ -154,2 +172,3 @@ describe("codex plugin", () => {
          nativeHookRelay: { enabled: true },
 +        runSafetyDispatch: TEST_RUN_SAFETY_HOST.dispatch,
        },
-     );
-   });
-@@ -203,13 +222,14 @@ describe("codex plugin", () => {
-     const result = { success: true };
-     runCodexAppServerAttemptMock.mockResolvedValueOnce(result);
+@@ -205,3 +224,3 @@ describe("codex plugin", () => {
  
 -    await expect(harness.runAttempt({ prompt: "calendar" } as never)).resolves.toBe(result);
 +    await expect(runHarnessAttempt(harness, { prompt: "calendar" } as never)).resolves.toBe(result);
  
-     expect(runCodexAppServerAttemptMock).toHaveBeenCalledWith(
-       { prompt: "calendar" },
-       {
-         pluginConfig: liveConfig.plugins.entries.codex.config,
+@@ -212,2 +231,3 @@ describe("codex plugin", () => {
          nativeHookRelay: { enabled: true },
 +        runSafetyDispatch: TEST_RUN_SAFETY_HOST.dispatch,
        },
-     );
-   });
 diff --git a/extensions/codex/src/app-server/compact.ts b/extensions/codex/src/app-server/compact.ts
 index e35df2557..a1787255b 100644
 --- a/extensions/codex/src/app-server/compact.ts
 +++ b/extensions/codex/src/app-server/compact.ts
-@@ -1,5 +1,6 @@
- import {
+@@ -2,2 +2,3 @@ import {
    embeddedAgentLog,
 +  type AgentHarnessRunSafetyDispatchV1,
    type CompactEmbeddedAgentSessionParams,
-   type EmbeddedAgentCompactResult,
- } from "openclaw/plugin-sdk/agent-harness-runtime";
-@@ -16,7 +17,11 @@ const warnedIgnoredCompactionOverrides = new Set<string>();
- 
- export async function maybeCompactCodexAppServerSession(
+@@ -18,3 +19,7 @@ export async function maybeCompactCodexAppServerSession(
    params: CompactEmbeddedAgentSessionParams,
 -  options: { pluginConfig?: unknown; clientFactory?: CodexAppServerClientFactory } = {},
 +  options: {
@@ -131,11 +97,7 @@ index e35df2557..a1787255b 100644
 +    runSafetyDispatch?: AgentHarnessRunSafetyDispatchV1;
 +  } = {},
  ): Promise<EmbeddedAgentCompactResult | undefined> {
-   warnIfIgnoringOpenClawCompactionOverrides(params);
-   // Codex owns automatic context-pressure compaction for Codex runtime sessions.
-@@ -126,7 +131,11 @@ function readRecord(value: unknown): Record<string, unknown> | undefined {
- 
- async function compactCodexNativeThread(
+@@ -128,3 +133,7 @@ async function compactCodexNativeThread(
    params: CompactEmbeddedAgentSessionParams,
 -  options: { pluginConfig?: unknown; clientFactory?: CodexAppServerClientFactory } = {},
 +  options: {
@@ -144,11 +106,7 @@ index e35df2557..a1787255b 100644
 +    runSafetyDispatch?: AgentHarnessRunSafetyDispatchV1;
 +  } = {},
  ): Promise<EmbeddedAgentCompactResult | undefined> {
-   if (params.trigger !== "manual") {
-     embeddedAgentLog.info("skipping codex app-server compaction for non-manual trigger", {
-@@ -185,9 +194,19 @@ async function compactCodexNativeThread(
-     params.config,
-   );
+@@ -187,5 +196,15 @@ async function compactCodexNativeThread(
    try {
 -    await client.request("thread/compact/start", {
 +    const compactPayload = {
@@ -166,31 +124,19 @@ index e35df2557..a1787255b 100644
 +      await sendCompact(compactPayload);
 +    }
      embeddedAgentLog.info("started codex app-server compaction", {
-       sessionId: params.sessionId,
-       threadId: binding.threadId,
 diff --git a/extensions/codex/src/app-server/run-attempt.ts b/extensions/codex/src/app-server/run-attempt.ts
 index b98dd9607..c2e778de5 100644
 --- a/extensions/codex/src/app-server/run-attempt.ts
 +++ b/extensions/codex/src/app-server/run-attempt.ts
-@@ -31,6 +31,7 @@ import {
-   runAgentCleanupStep,
-   type EmbeddedRunAttemptParams,
+@@ -33,2 +33,3 @@ import {
    type EmbeddedRunAttemptResult,
 +  type AgentHarnessRunSafetyDispatchV1,
    type NativeHookRelayEvent,
-   type NativeHookRelayRegistrationHandle,
- } from "openclaw/plugin-sdk/agent-harness-runtime";
-@@ -342,6 +343,7 @@ export async function runCodexAppServerAttempt(
-     postToolRawAssistantCompletionIdleTimeoutMs?: number;
-     turnTerminalIdleTimeoutMs?: number;
+@@ -344,2 +345,3 @@ export async function runCodexAppServerAttempt(
      clientFactory?: CodexAppServerClientFactory;
 +    runSafetyDispatch?: AgentHarnessRunSafetyDispatchV1;
    } = {},
- ): Promise<EmbeddedRunAttemptResult> {
-   const attemptStartedAt = Date.now();
-@@ -1863,12 +1865,19 @@ export async function runCodexAppServerAttempt(
-         workspaceBootstrapContext.heartbeatCollaborationInstructions,
-     });
+@@ -1865,8 +1867,15 @@ export async function runCodexAppServerAttempt(
      codexModelCallDiagnostics.setRequestPayloadBytes(utf8JsonByteLength(turnStartParams));
 -    const startedTurn = assertCodexTurnStartResponse(
 -      await client.request("turn/start", turnStartParams, {
@@ -210,15 +156,11 @@ index b98dd9607..c2e778de5 100644
 +      : await sendTurnStart(turnStartParams);
 +    const startedTurn = assertCodexTurnStartResponse(response);
      throwIfTurnStartAcceptedAfterAbort();
-     return startedTurn;
-   };
 diff --git a/extensions/copilot/harness.test.ts b/extensions/copilot/harness.test.ts
 index f01a68b77..59f786a6a 100644
 --- a/extensions/copilot/harness.test.ts
 +++ b/extensions/copilot/harness.test.ts
-@@ -36,6 +36,27 @@ const TEST_SESSION_CONFIG = {
-   tools: [],
-   workingDirectory: "/workspace",
+@@ -38,2 +38,23 @@ const TEST_SESSION_CONFIG = {
  };
 +const TEST_RUN_SAFETY_HOST = {
 +  contractVersion: 1 as const,
@@ -242,190 +184,110 @@ index f01a68b77..59f786a6a 100644
 +  return harness.compactV1(params, TEST_RUN_SAFETY_HOST);
 +}
  
- function makePoolMock(): CopilotClientPool {
-   return {
-@@ -206,7 +227,7 @@ describe("createCopilotAgentHarness", () => {
-     expect(mocks.createCopilotClientPool).not.toHaveBeenCalled();
-     expect(mocks.runCopilotAttempt).not.toHaveBeenCalled();
+@@ -208,3 +229,3 @@ describe("createCopilotAgentHarness", () => {
  
 -    await expect(harness.runAttempt(ATTEMPT_PARAMS)).resolves.toBe(ATTEMPT_RESULT);
 +    await expect(runHarnessAttempt(harness, ATTEMPT_PARAMS)).resolves.toBe(ATTEMPT_RESULT);
  
-     expect(mocks.createCopilotClientPool).toHaveBeenCalledTimes(1);
-     expect(mocks.runCopilotAttempt).toHaveBeenCalledTimes(1);
-@@ -220,8 +241,8 @@ describe("createCopilotAgentHarness", () => {
-     mocks.runCopilotAttempt.mockResolvedValueOnce(firstResult).mockResolvedValueOnce(secondResult);
-     const harness = createCopilotAgentHarness();
+@@ -222,4 +243,4 @@ describe("createCopilotAgentHarness", () => {
  
 -    await expect(harness.runAttempt(ATTEMPT_PARAMS)).resolves.toBe(firstResult);
 -    await expect(harness.runAttempt(ATTEMPT_PARAMS)).resolves.toBe(secondResult);
 +    await expect(runHarnessAttempt(harness, ATTEMPT_PARAMS)).resolves.toBe(firstResult);
 +    await expect(runHarnessAttempt(harness, ATTEMPT_PARAMS)).resolves.toBe(secondResult);
  
-     expect(mocks.createCopilotClientPool).toHaveBeenCalledTimes(1);
-     expect(mocks.runCopilotAttempt).toHaveBeenNthCalledWith(
-@@ -243,8 +264,8 @@ describe("createCopilotAgentHarness", () => {
-     const firstHarness = createCopilotAgentHarness();
-     const secondHarness = createCopilotAgentHarness();
+@@ -245,4 +266,4 @@ describe("createCopilotAgentHarness", () => {
  
 -    await expect(firstHarness.runAttempt(ATTEMPT_PARAMS)).resolves.toBe(ATTEMPT_RESULT);
 -    await expect(secondHarness.runAttempt(ATTEMPT_PARAMS)).resolves.toBe(ATTEMPT_RESULT);
 +    await expect(runHarnessAttempt(firstHarness, ATTEMPT_PARAMS)).resolves.toBe(ATTEMPT_RESULT);
 +    await expect(runHarnessAttempt(secondHarness, ATTEMPT_PARAMS)).resolves.toBe(ATTEMPT_RESULT);
  
-     expect(mocks.createCopilotClientPool).toHaveBeenCalledTimes(2);
-     expect(mocks.runCopilotAttempt).toHaveBeenNthCalledWith(
-@@ -267,8 +288,8 @@ describe("createCopilotAgentHarness", () => {
-     mocks.runCopilotAttempt.mockResolvedValueOnce(firstResult).mockResolvedValueOnce(secondResult);
-     const harness = createCopilotAgentHarness();
+@@ -269,4 +290,4 @@ describe("createCopilotAgentHarness", () => {
  
 -    await expect(harness.runAttempt(ATTEMPT_PARAMS)).resolves.toBe(firstResult);
 -    await expect(harness.runAttempt(ATTEMPT_PARAMS)).resolves.toBe(secondResult);
 +    await expect(runHarnessAttempt(harness, ATTEMPT_PARAMS)).resolves.toBe(firstResult);
 +    await expect(runHarnessAttempt(harness, ATTEMPT_PARAMS)).resolves.toBe(secondResult);
  
-     expect(mocks.createCopilotClientPool).toHaveBeenCalledTimes(1);
-     expect(mocks.runCopilotAttempt).toHaveBeenCalledTimes(2);
-@@ -285,7 +306,7 @@ describe("createCopilotAgentHarness", () => {
-   it("dispose during lazy startup prevents the attempt from creating a pool", async () => {
-     const harness = createCopilotAgentHarness();
+@@ -287,3 +308,3 @@ describe("createCopilotAgentHarness", () => {
  
 -    const attemptPromise = harness.runAttempt(ATTEMPT_PARAMS);
 +    const attemptPromise = runHarnessAttempt(harness, ATTEMPT_PARAMS);
      const disposePromise = harness.dispose?.();
- 
-     await expect(attemptPromise).rejects.toThrow(
-@@ -301,7 +322,7 @@ describe("createCopilotAgentHarness", () => {
-     mocks.createCopilotClientPool.mockReturnValue(pool);
-     const harness = createCopilotAgentHarness();
+@@ -303,3 +324,3 @@ describe("createCopilotAgentHarness", () => {
  
 -    await harness.runAttempt(ATTEMPT_PARAMS);
 +    await runHarnessAttempt(harness, ATTEMPT_PARAMS);
  
-     const firstDispose = harness.dispose?.();
-     const secondDispose = harness.dispose?.();
-@@ -318,7 +339,7 @@ describe("createCopilotAgentHarness", () => {
-     mocks.runCopilotAttempt.mockImplementation(() => deferred.promise);
-     const harness = createCopilotAgentHarness();
+@@ -320,3 +341,3 @@ describe("createCopilotAgentHarness", () => {
  
 -    const attemptPromise = harness.runAttempt(ATTEMPT_PARAMS);
 +    const attemptPromise = runHarnessAttempt(harness, ATTEMPT_PARAMS);
      await flushAsyncWork();
- 
-     const disposePromise = harness.dispose?.();
-@@ -344,7 +365,7 @@ describe("createCopilotAgentHarness", () => {
- 
-     await harness.dispose?.();
+@@ -346,3 +367,3 @@ describe("createCopilotAgentHarness", () => {
  
 -    await expect(harness.runAttempt(ATTEMPT_PARAMS)).rejects.toThrow(
 +    await expect(runHarnessAttempt(harness, ATTEMPT_PARAMS)).rejects.toThrow(
        "[copilot] harness has been disposed; cannot start new attempts",
-     );
-     expect(mocks.createCopilotClientPool).not.toHaveBeenCalled();
-@@ -357,7 +378,7 @@ describe("createCopilotAgentHarness", () => {
-     mocks.createCopilotClientPool.mockReturnValue(pool);
-     const harness = createCopilotAgentHarness();
+@@ -359,3 +380,3 @@ describe("createCopilotAgentHarness", () => {
  
 -    await harness.runAttempt(ATTEMPT_PARAMS);
 +    await runHarnessAttempt(harness, ATTEMPT_PARAMS);
  
-     try {
-       await harness.dispose?.();
-@@ -373,7 +394,7 @@ describe("createCopilotAgentHarness", () => {
-     const pool = makePoolMock();
-     const harness = createCopilotAgentHarness({ pool });
+@@ -375,3 +396,3 @@ describe("createCopilotAgentHarness", () => {
  
 -    await harness.runAttempt(ATTEMPT_PARAMS);
 +    await runHarnessAttempt(harness, ATTEMPT_PARAMS);
      await expect(harness.dispose?.()).resolves.toBeUndefined();
- 
-     expect(pool["dispose"]).not.toHaveBeenCalled();
-@@ -383,7 +404,7 @@ describe("createCopilotAgentHarness", () => {
-     const pool = makePoolMock();
-     const harness = createCopilotAgentHarness({ pool });
+@@ -385,3 +406,3 @@ describe("createCopilotAgentHarness", () => {
  
 -    await expect(harness.runAttempt(ATTEMPT_PARAMS)).resolves.toBe(ATTEMPT_RESULT);
 +    await expect(runHarnessAttempt(harness, ATTEMPT_PARAMS)).resolves.toBe(ATTEMPT_RESULT);
  
-     expect(mocks.createCopilotClientPool).not.toHaveBeenCalled();
-     expect(mocks.runCopilotAttempt).toHaveBeenCalledWith(
-@@ -420,7 +441,7 @@ describe("createCopilotAgentHarness", () => {
-       });
-       const harness = createCopilotAgentHarness({ pool });
+@@ -422,3 +443,3 @@ describe("createCopilotAgentHarness", () => {
  
 -      await harness.runAttempt({ ...ATTEMPT_PARAMS, sessionId: "oc-sess-1" });
 +      await runHarnessAttempt(harness, { ...ATTEMPT_PARAMS, sessionId: "oc-sess-1" });
        await harness.reset?.({ sessionId: "oc-sess-1" });
- 
-       expect(deleteSession).toHaveBeenCalledTimes(1);
-@@ -433,7 +454,7 @@ describe("createCopilotAgentHarness", () => {
-       mocks.runCopilotAttempt.mockImplementation(async (_params, _deps) => ATTEMPT_RESULT);
-       const harness = createCopilotAgentHarness({ pool });
+@@ -435,3 +456,3 @@ describe("createCopilotAgentHarness", () => {
  
 -      await harness.runAttempt({ ...ATTEMPT_PARAMS, sessionId: "oc-sess-2" });
 +      await runHarnessAttempt(harness, { ...ATTEMPT_PARAMS, sessionId: "oc-sess-2" });
        await harness.reset?.({ sessionId: "oc-sess-2" });
- 
-       expect(deleteSession).not.toHaveBeenCalled();
-@@ -452,7 +473,7 @@ describe("createCopilotAgentHarness", () => {
-       });
-       const harness = createCopilotAgentHarness({ pool });
+@@ -454,3 +475,3 @@ describe("createCopilotAgentHarness", () => {
  
 -      await harness.runAttempt({ ...ATTEMPT_PARAMS, sessionId: "oc-sess-3" });
 +      await runHarnessAttempt(harness, { ...ATTEMPT_PARAMS, sessionId: "oc-sess-3" });
  
-       await expect(harness.reset?.({ sessionId: "oc-sess-3" })).resolves.toBeUndefined();
-       expect(deleteSession).toHaveBeenCalledTimes(1);
-@@ -471,7 +492,7 @@ describe("createCopilotAgentHarness", () => {
-       });
-       const harness = createCopilotAgentHarness({ pool });
+@@ -473,3 +494,3 @@ describe("createCopilotAgentHarness", () => {
  
 -      await harness.runAttempt({ ...ATTEMPT_PARAMS, sessionId: "oc-sess-4" });
 +      await runHarnessAttempt(harness, { ...ATTEMPT_PARAMS, sessionId: "oc-sess-4" });
        await harness.reset?.({ sessionId: "oc-sess-4" });
-       await harness.reset?.({ sessionId: "oc-sess-4" });
- 
-@@ -491,7 +512,7 @@ describe("createCopilotAgentHarness", () => {
-       });
-       const harness = createCopilotAgentHarness({ pool });
+@@ -493,3 +514,3 @@ describe("createCopilotAgentHarness", () => {
  
 -      await harness.runAttempt({ ...ATTEMPT_PARAMS, sessionId: "oc-A" });
 +      await runHarnessAttempt(harness, { ...ATTEMPT_PARAMS, sessionId: "oc-A" });
        await harness.reset?.({ sessionId: "oc-B" });
- 
-       expect(deleteSession).not.toHaveBeenCalled();
-@@ -511,7 +532,7 @@ describe("createCopilotAgentHarness", () => {
-     });
-     const harness = createCopilotAgentHarness({ pool });
+@@ -513,3 +534,3 @@ describe("createCopilotAgentHarness", () => {
  
 -    await harness.runAttempt({ ...ATTEMPT_PARAMS, sessionId: "oc-disp" });
 +    await runHarnessAttempt(harness, { ...ATTEMPT_PARAMS, sessionId: "oc-disp" });
      await harness.dispose?.();
-     await harness.reset?.({ sessionId: "oc-disp" });
- 
-@@ -553,8 +574,8 @@ describe("createCopilotAgentHarness", () => {
-       });
-       const harness = createCopilotAgentHarness({ pool });
+@@ -555,4 +576,4 @@ describe("createCopilotAgentHarness", () => {
  
 -      await harness.runAttempt(makeAttemptParams({ runId: "t1" }));
 -      await harness.runAttempt(makeAttemptParams({ runId: "t2" }));
 +      await runHarnessAttempt(harness, makeAttemptParams({ runId: "t1" }));
 +      await runHarnessAttempt(harness, makeAttemptParams({ runId: "t2" }));
  
-       expect(mocks.runCopilotAttempt).toHaveBeenCalledTimes(2);
-       const secondCallParams = mocks.runCopilotAttempt.mock.calls[1]?.[0] as {
-@@ -576,7 +597,7 @@ describe("createCopilotAgentHarness", () => {
-       });
-       const harness = createCopilotAgentHarness({ pool });
+@@ -578,3 +599,3 @@ describe("createCopilotAgentHarness", () => {
  
 -      await harness.runAttempt(makeAttemptParams({ runId: "t1" }));
 +      await runHarnessAttempt(harness, makeAttemptParams({ runId: "t1" }));
  
-       const firstCallParams = mocks.runCopilotAttempt.mock.calls[0]?.[0] as {
-         initialReplayState?: { sdkSessionId?: string };
-@@ -595,10 +616,12 @@ describe("createCopilotAgentHarness", () => {
-       });
-       const harness = createCopilotAgentHarness({ pool });
+@@ -597,6 +618,8 @@ describe("createCopilotAgentHarness", () => {
  
 -      await harness.runAttempt(
 +      await runHarnessAttempt(
@@ -436,87 +298,55 @@ index f01a68b77..59f786a6a 100644
 +      await runHarnessAttempt(
 +        harness,
          makeAttemptParams({
-           runId: "t2",
-           model: { provider: "github-copilot", id: "claude-sonnet-4.5" },
-@@ -622,13 +645,15 @@ describe("createCopilotAgentHarness", () => {
-       });
-       const harness = createCopilotAgentHarness({ pool });
+@@ -624,3 +647,4 @@ describe("createCopilotAgentHarness", () => {
  
 -      await harness.runAttempt(
 +      await runHarnessAttempt(
 +        harness,
          makeAttemptParams({
-           runId: "t1",
-           model: { api: "chat", provider: "github-copilot", id: "gpt-4.1" },
-         }),
+@@ -630,3 +654,4 @@ describe("createCopilotAgentHarness", () => {
        );
 -      await harness.runAttempt(
 +      await runHarnessAttempt(
 +        harness,
          makeAttemptParams({
-           runId: "t2",
-           model: { api: "responses", provider: "github-copilot", id: "gpt-4.1" },
-@@ -657,13 +682,15 @@ describe("createCopilotAgentHarness", () => {
-       // surfaces the version into authProfileVersion) so a profile
-       // version bump is a real auth rotation, not a no-op fall-through
+@@ -659,3 +684,4 @@ describe("createCopilotAgentHarness", () => {
        // to useLoggedInUser.
 -      await harness.runAttempt(
 +      await runHarnessAttempt(
 +        harness,
          makeAttemptParams({
-           runId: "t1",
-           auth: { gitHubToken: "tok-1", profileId: "p1", profileVersion: "v1" },
-         }),
+@@ -665,3 +691,4 @@ describe("createCopilotAgentHarness", () => {
        );
 -      await harness.runAttempt(
 +      await runHarnessAttempt(
 +        harness,
          makeAttemptParams({
-           runId: "t2",
-           auth: { gitHubToken: "tok-1", profileId: "p1", profileVersion: "v2" },
-@@ -693,7 +720,8 @@ describe("createCopilotAgentHarness", () => {
-       });
-       const harness = createCopilotAgentHarness({ pool });
+@@ -695,3 +722,4 @@ describe("createCopilotAgentHarness", () => {
  
 -      await harness.runAttempt(
 +      await runHarnessAttempt(
 +        harness,
          makeAttemptParams({
-           runId: "t1",
-           auth: undefined,
-@@ -701,7 +729,8 @@ describe("createCopilotAgentHarness", () => {
-           resolvedApiKey: "tok-same",
-         }),
+@@ -703,3 +731,4 @@ describe("createCopilotAgentHarness", () => {
        );
 -      await harness.runAttempt(
 +      await runHarnessAttempt(
 +        harness,
          makeAttemptParams({
-           runId: "t2",
-           auth: undefined,
-@@ -733,7 +762,8 @@ describe("createCopilotAgentHarness", () => {
-       });
-       const harness = createCopilotAgentHarness({ pool });
+@@ -735,3 +764,4 @@ describe("createCopilotAgentHarness", () => {
  
 -      await harness.runAttempt(
 +      await runHarnessAttempt(
 +        harness,
          makeAttemptParams({
-           runId: "t1",
-           auth: undefined,
-@@ -741,7 +771,8 @@ describe("createCopilotAgentHarness", () => {
-           resolvedApiKey: "tok-a",
-         }),
+@@ -743,3 +773,4 @@ describe("createCopilotAgentHarness", () => {
        );
 -      await harness.runAttempt(
 +      await runHarnessAttempt(
 +        harness,
          makeAttemptParams({
-           runId: "t2",
-           auth: undefined,
-@@ -767,8 +798,9 @@ describe("createCopilotAgentHarness", () => {
-       });
-       const harness = createCopilotAgentHarness({ pool });
+@@ -769,4 +800,5 @@ describe("createCopilotAgentHarness", () => {
  
 -      await harness.runAttempt(makeAttemptParams({ runId: "t1" }));
 -      await harness.runAttempt(
@@ -524,11 +354,7 @@ index f01a68b77..59f786a6a 100644
 +      await runHarnessAttempt(
 +        harness,
          makeAttemptParams({
-           runId: "t2",
-           initialReplayState: { replayInvalid: true },
-@@ -798,9 +830,9 @@ describe("createCopilotAgentHarness", () => {
-       });
-       const harness = createCopilotAgentHarness({ pool });
+@@ -800,5 +832,5 @@ describe("createCopilotAgentHarness", () => {
  
 -      await harness.runAttempt(makeAttemptParams({ runId: "t1" }));
 +      await runHarnessAttempt(harness, makeAttemptParams({ runId: "t1" }));
@@ -536,60 +362,36 @@ index f01a68b77..59f786a6a 100644
 -      await harness.runAttempt(makeAttemptParams({ runId: "t2" }));
 +      await runHarnessAttempt(harness, makeAttemptParams({ runId: "t2" }));
        await harness.reset?.({ sessionId: "oc-sess-reuse" });
- 
-       expect(deleteSession).toHaveBeenCalledTimes(1);
-@@ -829,8 +861,8 @@ describe("createCopilotAgentHarness", () => {
-         sessionStore: sessionStore.store,
-       });
+@@ -831,4 +863,4 @@ describe("createCopilotAgentHarness", () => {
  
 -      await firstHarness.runAttempt(makeAttemptParams({ runId: "t1" }));
 -      await secondHarness.runAttempt(makeAttemptParams({ runId: "t2" }));
 +      await runHarnessAttempt(firstHarness, makeAttemptParams({ runId: "t1" }));
 +      await runHarnessAttempt(secondHarness, makeAttemptParams({ runId: "t2" }));
  
-       expect(sessionStore.store.register).toHaveBeenCalledWith(
-         "oc-sess-reuse",
-@@ -859,7 +891,7 @@ describe("createCopilotAgentHarness", () => {
-         sessionStore: sessionStore.store,
-       });
+@@ -861,3 +893,3 @@ describe("createCopilotAgentHarness", () => {
  
 -      await firstHarness.runAttempt(makeAttemptParams({ runId: "t1" }));
 +      await runHarnessAttempt(firstHarness, makeAttemptParams({ runId: "t1" }));
        const stored = sessionStore.entries.get("oc-sess-reuse");
-       if (!stored) {
-         throw new Error("expected persisted binding");
-@@ -876,7 +908,7 @@ describe("createCopilotAgentHarness", () => {
-         sessionStore: sessionStore.store,
-       });
+@@ -878,3 +910,3 @@ describe("createCopilotAgentHarness", () => {
  
 -      await secondHarness.runAttempt(makeAttemptParams({ runId: "t2" }));
 +      await runHarnessAttempt(secondHarness, makeAttemptParams({ runId: "t2" }));
  
-       const secondCallParams = mocks.runCopilotAttempt.mock.calls[0]?.[0] as {
-         initialReplayState?: { sdkSessionId?: string };
-@@ -895,7 +927,7 @@ describe("createCopilotAgentHarness", () => {
-         sessionStore: sessionStore.store,
-       });
+@@ -897,3 +929,3 @@ describe("createCopilotAgentHarness", () => {
  
 -      await expect(harness.runAttempt(makeAttemptParams({ runId: "t1" }))).resolves.toBe(
 +      await expect(runHarnessAttempt(harness, makeAttemptParams({ runId: "t1" }))).resolves.toBe(
          ATTEMPT_RESULT,
-       );
- 
-@@ -931,8 +963,8 @@ describe("createCopilotAgentHarness", () => {
-         sessionStore: sessionStore.store,
-       });
+@@ -933,4 +965,4 @@ describe("createCopilotAgentHarness", () => {
  
 -      await harness.runAttempt(makeAttemptParams({ runId: "t1" }));
 -      await harness.runAttempt(makeAttemptParams({ runId: "t2" }));
 +      await runHarnessAttempt(harness, makeAttemptParams({ runId: "t1" }));
 +      await runHarnessAttempt(harness, makeAttemptParams({ runId: "t2" }));
  
-       const secondCallParams = mocks.runCopilotAttempt.mock.calls[1]?.[0] as {
-         initialReplayState?: { sdkSessionId?: string };
-@@ -960,10 +992,12 @@ describe("createCopilotAgentHarness", () => {
-         sessionStore: sessionStore.store,
-       });
+@@ -962,6 +994,8 @@ describe("createCopilotAgentHarness", () => {
  
 -      await firstHarness.runAttempt(
 +      await runHarnessAttempt(
@@ -600,166 +402,102 @@ index f01a68b77..59f786a6a 100644
 +      await runHarnessAttempt(
 +        secondHarness,
          makeAttemptParams({
-           runId: "t2",
-           model: { provider: "github-copilot", id: "claude-sonnet-4.5" },
-@@ -998,14 +1032,16 @@ describe("createCopilotAgentHarness", () => {
-         copilotHome: undefined,
-       };
+@@ -1000,3 +1034,4 @@ describe("createCopilotAgentHarness", () => {
  
 -      await firstHarness.runAttempt(
 +      await runHarnessAttempt(
 +        firstHarness,
          makeAttemptParams({
-           ...defaultHomeParams,
-           runId: "t1",
-           agentId: "main",
-         }),
+@@ -1007,3 +1042,4 @@ describe("createCopilotAgentHarness", () => {
        );
 -      await secondHarness.runAttempt(
 +      await runHarnessAttempt(
 +        secondHarness,
          makeAttemptParams({
-           ...defaultHomeParams,
-           runId: "t2",
-@@ -1033,20 +1069,23 @@ describe("createCopilotAgentHarness", () => {
-         sessionStore: sessionStore.store,
-       });
+@@ -1035,3 +1071,4 @@ describe("createCopilotAgentHarness", () => {
  
 -      await harness.runAttempt(
 +      await runHarnessAttempt(
 +        harness,
          makeAttemptParams({ runId: "t1", model: { provider: "github-copilot", id: "gpt-4.1" } }),
-       );
-       const persisted = sessionStore.entries.get("oc-sess-reuse");
-       expect(persisted).toBeDefined();
+@@ -1041,3 +1078,4 @@ describe("createCopilotAgentHarness", () => {
  
 -      await harness.runAttempt(
 +      await runHarnessAttempt(
 +        harness,
          makeAttemptParams({
-           runId: "t2",
-           model: { provider: "github-copilot", id: "claude-sonnet-4.5" },
-         }),
-       );
+@@ -1048,3 +1086,4 @@ describe("createCopilotAgentHarness", () => {
        sessionStore.entries.set("oc-sess-reuse", persisted!);
 -      await harness.runAttempt(
 +      await runHarnessAttempt(
 +        harness,
          makeAttemptParams({ runId: "t3", model: { provider: "github-copilot", id: "gpt-4.1" } }),
-       );
- 
-@@ -1095,7 +1134,7 @@ describe("createCopilotAgentHarness", () => {
-         sessionStore: sessionStore.store,
-       });
+@@ -1097,3 +1136,3 @@ describe("createCopilotAgentHarness", () => {
  
 -      await harness.runAttempt(makeAttemptParams({ runId: "t1" }));
 +      await runHarnessAttempt(harness, makeAttemptParams({ runId: "t1" }));
        await harness.reset?.({ sessionId: "oc-sess-reuse" });
- 
-       expect(deleteSession).toHaveBeenCalledWith("sdk-sess-reset");
-@@ -1115,7 +1154,7 @@ describe("createCopilotAgentHarness", () => {
-         sessionStore: sessionStore.store,
-       });
+@@ -1117,3 +1156,3 @@ describe("createCopilotAgentHarness", () => {
  
 -      await firstHarness.runAttempt(makeAttemptParams({ runId: "t1" }));
 +      await runHarnessAttempt(firstHarness, makeAttemptParams({ runId: "t1" }));
        expect(sessionStore.entries.get("oc-sess-reuse")?.sdkSessionId).toBe("sdk-sess-before-reset");
-       sessionStore.store.delete.mockImplementation(() => {
-         throw new Error("sqlite delete failed");
-@@ -1127,7 +1166,7 @@ describe("createCopilotAgentHarness", () => {
-       });
- 
+@@ -1129,3 +1168,3 @@ describe("createCopilotAgentHarness", () => {
        await harness.reset?.({ sessionId: "oc-sess-reuse" });
 -      await harness.runAttempt(makeAttemptParams({ runId: "t2" }));
 +      await runHarnessAttempt(harness, makeAttemptParams({ runId: "t2" }));
  
-       const callParams = mocks.runCopilotAttempt.mock.calls[1]?.[0] as {
-         initialReplayState?: { sdkSessionId?: string };
-@@ -1153,7 +1192,7 @@ describe("createCopilotAgentHarness", () => {
- 
-     it("returns ok:false when sessionId is missing", async () => {
+@@ -1155,3 +1194,3 @@ describe("createCopilotAgentHarness", () => {
        const harness = createCopilotAgentHarness({ pool: makePoolMock() });
 -      const result = await harness.compact?.({ workspaceDir: "/ws" } as any);
 +      const result = await runHarnessCompact(harness, { workspaceDir: "/ws" } as any);
        expect(result).toEqual({
-         ok: false,
-         compacted: false,
-@@ -1163,7 +1202,7 @@ describe("createCopilotAgentHarness", () => {
- 
-     it("returns ok:false when the SDK session is not tracked", async () => {
+@@ -1165,3 +1204,3 @@ describe("createCopilotAgentHarness", () => {
        const harness = createCopilotAgentHarness({ pool: makePoolMock() });
 -      const result = await harness.compact?.({
 +      const result = await runHarnessCompact(harness, {
          sessionId: "oc-sess-compact-1",
-         trigger: "budget",
-         currentTokenCount: 12345,
-@@ -1210,14 +1249,15 @@ describe("createCopilotAgentHarness", () => {
-       });
-       const harness = createCopilotAgentHarness({ pool });
+@@ -1212,3 +1251,4 @@ describe("createCopilotAgentHarness", () => {
  
 -      await harness.runAttempt(
 +      await runHarnessAttempt(
 +        harness,
          makeCompactParams({
-           agentId: "main",
-           sessionId: "oc-sess-compact-1",
-           sessionKey: "agent:main:main",
-         }),
+@@ -1219,3 +1259,3 @@ describe("createCopilotAgentHarness", () => {
        );
 -      const result = await harness.compact?.({
 +      const result = await runHarnessCompact(harness, {
          ...makeCompactParams({ sessionId: "oc-sess-compact-1" }),
-         model: "gpt-4.1",
-         sessionKey: "agent:main:main",
-@@ -1282,14 +1322,15 @@ describe("createCopilotAgentHarness", () => {
-       });
-       const harness = createCopilotAgentHarness({ pool });
+@@ -1284,3 +1324,4 @@ describe("createCopilotAgentHarness", () => {
  
 -      await harness.runAttempt(
 +      await runHarnessAttempt(
 +        harness,
          makeCompactParams({
-           agentId: "main",
-           sessionId: "oc-sess-abort",
-           sessionKey: "agent:main:main",
-         }),
+@@ -1291,3 +1332,3 @@ describe("createCopilotAgentHarness", () => {
        );
 -      const result = await harness.compact?.({
 +      const result = await runHarnessCompact(harness, {
          ...makeCompactParams({ sessionId: "oc-sess-abort" }),
-         abortSignal: abortController.signal,
-         model: "gpt-4.1",
-@@ -1376,13 +1417,15 @@ describe("createCopilotAgentHarness", () => {
-       });
-       const harness = createCopilotAgentHarness({ pool });
+@@ -1378,3 +1419,4 @@ describe("createCopilotAgentHarness", () => {
  
 -      await harness.runAttempt(
 +      await runHarnessAttempt(
 +        harness,
          makeCompactParams({
-           auth: { gitHubToken: "ghp_test", profileId: "p1", profileVersion: "v1" },
-           sessionId: "oc-sess-token",
-         }),
+@@ -1384,3 +1426,4 @@ describe("createCopilotAgentHarness", () => {
        );
 -      const result = await harness.compact?.(
 +      const result = await runHarnessCompact(
 +        harness,
          makeCompactParams({
-           auth: undefined,
-           sessionId: "oc-sess-token",
-@@ -1398,7 +1441,8 @@ describe("createCopilotAgentHarness", () => {
-         failure: { reason: "missing_thread_binding" },
-       });
+@@ -1400,3 +1443,4 @@ describe("createCopilotAgentHarness", () => {
  
 -      const matchingResult = await harness.compact?.(
 +      const matchingResult = await runHarnessCompact(
 +        harness,
          makeCompactParams({
-           auth: undefined,
-           authProfileId: "p1",
-@@ -1441,8 +1485,9 @@ describe("createCopilotAgentHarness", () => {
-       });
-       const harness = createCopilotAgentHarness({ pool });
+@@ -1443,4 +1487,5 @@ describe("createCopilotAgentHarness", () => {
  
 -      await harness.runAttempt(makeCompactParams({ sessionId: "oc-sess-model" }));
 -      const result = await harness.compact?.(
@@ -767,30 +505,18 @@ index f01a68b77..59f786a6a 100644
 +      const result = await runHarnessCompact(
 +        harness,
          makeCompactParams({ model: "gpt-5", sessionId: "oc-sess-model" }),
-       );
- 
-@@ -1476,7 +1521,7 @@ describe("createCopilotAgentHarness", () => {
-       });
-       const harness = createCopilotAgentHarness({ pool });
+@@ -1478,3 +1523,3 @@ describe("createCopilotAgentHarness", () => {
  
 -      await harness.runAttempt(makeCompactParams({ sessionId: "oc-sess-login" }));
 +      await runHarnessAttempt(harness, makeCompactParams({ sessionId: "oc-sess-login" }));
        mocks.resolvePoolAcquire.mockReturnValueOnce({
-         auth: {
-           agentId: "test",
-@@ -1489,7 +1534,8 @@ describe("createCopilotAgentHarness", () => {
-         key: { agentId: "test", authMode: "gitHubToken", copilotHome: "/copilot-home" },
-         options: { copilotHome: "/copilot-home", gitHubToken: "ghp_test" },
+@@ -1491,3 +1536,4 @@ describe("createCopilotAgentHarness", () => {
        });
 -      const result = await harness.compact?.(
 +      const result = await runHarnessCompact(
 +        harness,
          makeCompactParams({
-           auth: { gitHubToken: "ghp_test", profileId: "p1", profileVersion: "v1" },
-           sessionId: "oc-sess-login",
-@@ -1529,8 +1575,11 @@ describe("createCopilotAgentHarness", () => {
-       });
-       const harness = createCopilotAgentHarness({ pool, sessionStore: sessionStore.store });
+@@ -1531,4 +1577,7 @@ describe("createCopilotAgentHarness", () => {
  
 -      await harness.runAttempt(makeCompactParams({ sessionId: "oc-sess-stale" }));
 -      const result = await harness.compact?.(makeCompactParams({ sessionId: "oc-sess-stale" }));
@@ -800,11 +526,7 @@ index f01a68b77..59f786a6a 100644
 +        makeCompactParams({ sessionId: "oc-sess-stale" }),
 +      );
  
-       expect(sessionStore.store.delete).toHaveBeenCalledWith("oc-sess-stale");
-       expect(result).toEqual({
-@@ -1564,8 +1613,9 @@ describe("createCopilotAgentHarness", () => {
-       });
-       const harness = createCopilotAgentHarness({ pool });
+@@ -1566,4 +1615,5 @@ describe("createCopilotAgentHarness", () => {
  
 -      await harness.runAttempt(makeCompactParams({ sessionId: "oc-sess-abort" }));
 -      const result = await harness.compact?.(
@@ -812,11 +534,7 @@ index f01a68b77..59f786a6a 100644
 +      const result = await runHarnessCompact(
 +        harness,
          makeCompactParams({ abortSignal: abort.signal, sessionId: "oc-sess-abort" }),
-       );
- 
-@@ -1618,8 +1668,9 @@ describe("createCopilotAgentHarness", () => {
-       });
-       const harness = createCopilotAgentHarness({ pool });
+@@ -1620,4 +1670,5 @@ describe("createCopilotAgentHarness", () => {
  
 -      await harness.runAttempt(makeCompactParams({ sessionId: "oc-sess-cancel" }));
 -      const resultPromise = harness.compact?.(
@@ -824,112 +542,68 @@ index f01a68b77..59f786a6a 100644
 +      const resultPromise = runHarnessCompact(
 +        harness,
          makeCompactParams({ abortSignal: abort.signal, sessionId: "oc-sess-cancel" }),
-       );
-       await vi.waitFor(() => expect(compact).toHaveBeenCalledTimes(1));
-@@ -1667,7 +1718,8 @@ describe("createCopilotAgentHarness", () => {
-         pool: makePoolMock(),
-         sessionStore: sessionStore.store,
+@@ -1669,3 +1720,4 @@ describe("createCopilotAgentHarness", () => {
        });
 -      await firstHarness.runAttempt(
 +      await runHarnessAttempt(
 +        firstHarness,
          makeCompactParams({
-           auth: { gitHubToken: "ghp_test", profileId: "p1", profileVersion: "v1" },
-           sessionId: "oc-sess-persisted-token",
-@@ -1685,7 +1737,8 @@ describe("createCopilotAgentHarness", () => {
-         pool: secondPool,
-         sessionStore: sessionStore.store,
+@@ -1687,3 +1739,4 @@ describe("createCopilotAgentHarness", () => {
        });
 -      const result = await secondHarness.compact?.(
 +      const result = await runHarnessCompact(
 +        secondHarness,
          makeCompactParams({ auth: undefined, sessionId: "oc-sess-persisted-token" }),
-       );
- 
-@@ -1717,7 +1770,8 @@ describe("createCopilotAgentHarness", () => {
-         pool: rotatedPool,
-         sessionStore: sessionStore.store,
+@@ -1719,3 +1772,4 @@ describe("createCopilotAgentHarness", () => {
        });
 -      const rotatedResult = await rotatedHarness.compact?.(
 +      const rotatedResult = await runHarnessCompact(
 +        rotatedHarness,
          makeCompactParams({
-           auth: { gitHubToken: "ghp_other", profileId: "p1", profileVersion: "v2" },
-           sessionId: "oc-sess-persisted-token",
-@@ -1750,7 +1804,7 @@ describe("createCopilotAgentHarness", () => {
-         });
-         return ATTEMPT_RESULT;
+@@ -1752,3 +1806,3 @@ describe("createCopilotAgentHarness", () => {
        });
 -      await firstHarness.runAttempt(makeCompactParams({ sessionId: "oc-sess-persisted" }));
 +      await runHarnessAttempt(firstHarness, makeCompactParams({ sessionId: "oc-sess-persisted" }));
  
-       const resumeSession = vi.fn();
-       const secondPool = makePoolMock();
-@@ -1765,7 +1819,8 @@ describe("createCopilotAgentHarness", () => {
-         sessionStore: sessionStore.store,
-       });
+@@ -1767,3 +1821,4 @@ describe("createCopilotAgentHarness", () => {
  
 -      const result = await secondHarness.compact?.(
 +      const result = await runHarnessCompact(
 +        secondHarness,
          makeCompactParams({ sessionId: "oc-sess-persisted" }),
-       );
- 
-@@ -1809,8 +1864,8 @@ describe("createCopilotAgentHarness", () => {
-       });
-       const harness = createCopilotAgentHarness({ pool });
+@@ -1811,4 +1866,4 @@ describe("createCopilotAgentHarness", () => {
  
 -      await harness.runAttempt(makeCompactParams({ sessionId: "oc-sess-noop" }));
 -      const result = await harness.compact?.({
 +      await runHarnessAttempt(harness, makeCompactParams({ sessionId: "oc-sess-noop" }));
 +      const result = await runHarnessCompact(harness, {
          ...makeCompactParams({ sessionId: "oc-sess-noop" }),
-         sessionId: "oc-sess-noop",
-         workspaceDir: "/this\u0000is/illegal",
 diff --git a/extensions/copilot/harness.ts b/extensions/copilot/harness.ts
 index b26482841..77d342219 100644
 --- a/extensions/copilot/harness.ts
 +++ b/extensions/copilot/harness.ts
-@@ -1,6 +1,8 @@
- import type { CopilotClient } from "@github/copilot-sdk";
- import {
+@@ -3,2 +3,4 @@ import {
    compactWithSafetyTimeout,
 +  createAgentHarnessCompactV1,
 +  createAgentHarnessRunAttemptV1,
    resolveCompactionTimeoutMs,
-   type AgentHarness,
-   type AgentHarnessAttemptParams,
-@@ -448,7 +450,8 @@ export function createCopilotAgentHarness(
-       return { supported: true, priority: 100 };
-     },
+@@ -450,3 +452,4 @@ export function createCopilotAgentHarness(
  
 -    async runAttempt(params: AgentHarnessAttemptParams): Promise<AgentHarnessAttemptResult> {
 +    runAttemptV1: createAgentHarnessRunAttemptV1(
 +      async (params: AgentHarnessAttemptParams, host): Promise<AgentHarnessAttemptResult> => {
        const attemptPromise = (async () => {
-         if (disposed) {
-           throw new Error("[copilot] harness has been disposed; cannot start new attempts");
-@@ -511,6 +514,7 @@ export function createCopilotAgentHarness(
- 
-         return runCopilotAttempt(effectiveParams, {
+@@ -513,2 +516,3 @@ export function createCopilotAgentHarness(
            pool,
 +          runSafetyDispatch: host.dispatch,
            onSessionEstablished: openclawSessionId
-             ? ({
-                 sdkSessionId,
-@@ -552,7 +556,8 @@ export function createCopilotAgentHarness(
-       } finally {
-         inFlight.delete(attemptPromise);
+@@ -554,3 +558,4 @@ export function createCopilotAgentHarness(
        }
 -    },
 +      },
 +    ),
  
-     async reset(params: AgentHarnessResetParams): Promise<void> {
-       const openclawSessionId = typeof params.sessionId === "string" ? params.sessionId : undefined;
-@@ -580,9 +585,11 @@ export function createCopilotAgentHarness(
-       }
-     },
+@@ -582,5 +587,7 @@ export function createCopilotAgentHarness(
  
 -    async compact(
 -      params: AgentHarnessCompactParams,
@@ -940,11 +614,7 @@ index b26482841..77d342219 100644
 +        host,
 +      ): Promise<AgentHarnessCompactResult | undefined> => {
        // The SDK owns Copilot history compaction. OpenClaw only resumes
-       // the tracked SDK session and calls the session-scoped RPC; durable
-       // OpenClaw session/transcript state stays in SQLite, with no marker
-@@ -627,32 +634,43 @@ export function createCopilotAgentHarness(
-         pool = await getPool();
-         handle = await pool.acquire(poolAcquire.key, poolAcquire.options);
+@@ -629,28 +636,39 @@ export function createCopilotAgentHarness(
          const client = handle.client;
 -        compactResult = await compactWithSafetyTimeout(
 -          (abortSignal) =>
@@ -1009,25 +679,17 @@ index b26482841..77d342219 100644
 +            ),
 +        });
        } catch (err) {
-         const rawError = err instanceof Error ? err.message : String(err);
-         if (isStaleSdkSessionError(err)) {
-@@ -697,7 +715,8 @@ export function createCopilotAgentHarness(
-         compacted,
-         reason: compacted ? "copilot-sdk-history-compacted" : "already under target",
+@@ -699,3 +717,4 @@ export function createCopilotAgentHarness(
        };
 -    },
 +      },
 +    ),
  
-     async dispose() {
-       if (disposePromise) {
 diff --git a/extensions/copilot/src/attempt.live.test.ts b/extensions/copilot/src/attempt.live.test.ts
 index 3669b313c..cdb871d42 100644
 --- a/extensions/copilot/src/attempt.live.test.ts
 +++ b/extensions/copilot/src/attempt.live.test.ts
-@@ -159,7 +159,10 @@ describeLive("copilot agent runtime live smoke", () => {
-     ).toEqual({ supported: true, priority: 100 });
- 
+@@ -161,3 +161,6 @@ describeLive("copilot agent runtime live smoke", () => {
      try {
 -      const result = await harness.runAttempt(
 +      if (!harness.runAttemptV1) {
@@ -1035,42 +697,26 @@ index 3669b313c..cdb871d42 100644
 +      }
 +      const result = await harness.runAttemptV1(
          createAttemptParams({
-           copilotHome,
-           onAssistantDelta: ({ text }) => {
-@@ -169,6 +172,10 @@ describeLive("copilot agent runtime live smoke", () => {
-           },
-           prompt,
+@@ -171,2 +174,6 @@ describeLive("copilot agent runtime live smoke", () => {
          }),
 +        {
 +          contractVersion: 1,
 +          dispatch: async ({ finalPayload, transport }) => await transport(finalPayload),
 +        },
        );
-       const assistantText = result.assistantTexts.join("\n").trim();
-       const hasAssistantText = result.assistantTexts.some((text) => text.trim().length > 0);
 diff --git a/extensions/copilot/src/attempt.ts b/extensions/copilot/src/attempt.ts
 index bc3af4962..cf008c969 100644
 --- a/extensions/copilot/src/attempt.ts
 +++ b/extensions/copilot/src/attempt.ts
-@@ -3,6 +3,7 @@ import type { MessageOptions, SessionConfig, Tool as SdkTool } from "@github/cop
- import type {
-   AgentHarnessAttemptParams,
+@@ -5,2 +5,3 @@ import type {
    AgentHarnessAttemptResult,
 +  AgentHarnessRunSafetyDispatchV1,
    AgentMessage,
-   SandboxContext,
- } from "openclaw/plugin-sdk/agent-harness-runtime";
-@@ -105,6 +106,7 @@ export type ResolveSandboxContextFn = typeof defaultResolveSandboxContext;
- 
- export interface CopilotAttemptDeps {
+@@ -107,2 +108,3 @@ export interface CopilotAttemptDeps {
    pool: CopilotClientPool;
 +  runSafetyDispatch?: AgentHarnessRunSafetyDispatchV1;
    now?: () => number;
-   createToolBridge?: typeof createCopilotToolBridge;
-   /**
-@@ -456,7 +458,21 @@ export async function runCopilotAttempt(
-       externalAbort = true;
-     } else {
+@@ -458,3 +460,17 @@ export async function runCopilotAttempt(
        sentTurnStarted = true;
 -      const result = await session.sendAndWait(messageOptions, input.timeoutMs);
 +      const finalPayload = {
@@ -1089,22 +735,15 @@ index bc3af4962..cf008c969 100644
 +          })
 +        : await sendTurn(finalPayload);
        await bridge.awaitDeltaChain();
-       if (!bridge.recordSendResult(result) && !aborted) {
-         // SDK sendAndWait returning undefined is treated as a timeout by the
 diff --git a/src/agents/harness/builtin-openclaw.ts b/src/agents/harness/builtin-openclaw.ts
 index c76fbaf6c..cdb02b90f 100644
 --- a/src/agents/harness/builtin-openclaw.ts
 +++ b/src/agents/harness/builtin-openclaw.ts
-@@ -1,5 +1,6 @@
- import { OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST } from "../../context-engine/host-compat.js";
+@@ -2,2 +2,3 @@ import { OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST } from "../../context-engine/host
  import { runEmbeddedAttempt } from "../embedded-agent-runner/run/attempt.js";
 +import { createAgentHarnessRunAttemptV1 } from "./run-safety-contract.js";
  import type { AgentHarness } from "./types.js";
- 
- export function createOpenClawAgentHarness(): AgentHarness {
-@@ -8,6 +9,9 @@ export function createOpenClawAgentHarness(): AgentHarness {
-     label: "OpenClaw embedded agent",
-     contextEngineHostCapabilities: OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST.capabilities,
+@@ -10,3 +11,6 @@ export function createOpenClawAgentHarness(): AgentHarness {
      supports: () => ({ supported: true, priority: 0 }),
 -    runAttempt: runEmbeddedAttempt,
 +    // Native OpenClaw provider sends are already guarded by the lower-level
@@ -1112,33 +751,22 @@ index c76fbaf6c..cdb02b90f 100644
 +    // still rejects every unversioned AgentHarness uniformly.
 +    runAttemptV1: createAgentHarnessRunAttemptV1(async (params) => runEmbeddedAttempt(params)),
    };
- }
 diff --git a/src/agents/harness/compaction.ts b/src/agents/harness/compaction.ts
 index 7aa0ebf81..1c54bce05 100644
 --- a/src/agents/harness/compaction.ts
 +++ b/src/agents/harness/compaction.ts
-@@ -9,7 +9,9 @@ import { resolveModelAsync } from "../embedded-agent-runner/model.js";
- import type { EmbeddedAgentCompactResult } from "../embedded-agent-runner/types.js";
- import { getApiKeyForModel } from "../model-auth.js";
+@@ -11,3 +11,5 @@ import { getApiKeyForModel } from "../model-auth.js";
  import { isCliRuntimeAliasForProvider, isCliRuntimeProvider } from "../model-runtime-aliases.js";
 +import { runSafetyRegistry } from "../run-safety-registry.js";
  import { resolveAgentHarnessPolicy as resolveConfiguredAgentHarnessPolicy } from "./policy.js";
 +import { runAgentHarnessCompactV1 } from "./run-safety-contract.js";
  import { selectAgentHarness } from "./selection.js";
- import type { AgentHarness } from "./types.js";
- 
-@@ -113,7 +115,7 @@ export async function maybeCompactAgentHarnessSession(
-     }
-     throw err;
+@@ -115,3 +117,3 @@ export async function maybeCompactAgentHarnessSession(
    }
 -  if (!harness.compact) {
 +  if (!harness.compact && !harness.compactV1) {
      if (harness.id !== "openclaw") {
-       return {
-         ok: false,
-@@ -141,5 +143,51 @@ export async function maybeCompactAgentHarnessSession(
-       error: formatErrorMessage(err),
-     });
+@@ -143,3 +145,49 @@ export async function maybeCompactAgentHarnessSession(
    }
 -  return harness.compact(resolvedApiKey ? { ...compactParams, resolvedApiKey } : compactParams);
 +  // Production compaction entry points (manual compact RPC, /compact, memory
@@ -1193,9 +821,7 @@ diff --git a/src/agents/harness/lifecycle.test.ts b/src/agents/harness/lifecycle
 index a792aa960..63d14ba99 100644
 --- a/src/agents/harness/lifecycle.test.ts
 +++ b/src/agents/harness/lifecycle.test.ts
-@@ -15,11 +15,14 @@ import {
-   type DiagnosticTraceContext,
- } from "../../infra/diagnostic-trace-context.js";
+@@ -17,4 +17,6 @@ import {
  import type { EmbeddedRunAttemptResult } from "../embedded-agent-runner/run/types.js";
 +import { RunSafetyController, RunSafetyRootCoordinator } from "../run-safety-controller.js";
  import { createOpenClawAgentHarness } from "./builtin-openclaw.js";
@@ -1203,15 +829,11 @@ index a792aa960..63d14ba99 100644
 +import { runAgentHarnessLifecycleAttempt as runAgentHarnessLifecycleAttemptRaw } from "./lifecycle.js";
 +import { createAgentHarnessRunAttemptV1 } from "./run-safety-contract.js";
  import type { AgentHarness, AgentHarnessAttemptParams } from "./types.js";
- 
+@@ -22,2 +24,3 @@ import type { AgentHarness, AgentHarnessAttemptParams } from "./types.js";
  function createAttemptParams(): AgentHarnessAttemptParams {
 +  const coordinator = new RunSafetyRootCoordinator("root-1");
    return {
-     prompt: "hello",
-     sessionId: "session-1",
-@@ -37,9 +40,32 @@ function createAttemptParams(): AgentHarnessAttemptParams {
-     thinkLevel: "low",
-     messageChannel: "qa",
+@@ -39,2 +42,9 @@ function createAttemptParams(): AgentHarnessAttemptParams {
      trigger: "manual",
 +    runSafety: {
 +      coordinator,
@@ -1221,7 +843,7 @@ index a792aa960..63d14ba99 100644
 +      }),
 +    },
    } as AgentHarnessAttemptParams;
- }
+@@ -42,2 +52,18 @@ function createAttemptParams(): AgentHarnessAttemptParams {
  
 +function runAgentHarnessLifecycleAttempt(harness: AgentHarness, params: AgentHarnessAttemptParams) {
 +  const legacyRunAttempt = harness.runAttempt;
@@ -1240,23 +862,15 @@ index a792aa960..63d14ba99 100644
 +}
 +
  function createDiagnosticTrace() {
-   return {
-     traceId: "11111111111111111111111111111111",
 diff --git a/src/agents/harness/lifecycle.ts b/src/agents/harness/lifecycle.ts
 index adce712d5..b3620f0e1 100644
 --- a/src/agents/harness/lifecycle.ts
 +++ b/src/agents/harness/lifecycle.ts
-@@ -16,6 +16,7 @@ import {
-   type DiagnosticTraceContext,
- } from "../../infra/diagnostic-trace-context.js";
+@@ -18,2 +18,3 @@ import {
  import { applyAgentHarnessResultClassification } from "./result-classification.js";
 +import { runAgentHarnessAttemptV1 } from "./run-safety-contract.js";
  import type {
-   AgentHarness,
-   AgentHarnessAttemptParams,
-@@ -236,7 +237,11 @@ export async function runAgentHarnessLifecycleAttempt(
-     }
-     const runAndClassify = async () => {
+@@ -238,3 +239,7 @@ export async function runAgentHarnessLifecycleAttempt(
        phase = "send";
 -      const rawResult = await harness.runAttempt(params);
 +      const rawResult = await runAgentHarnessAttemptV1({
@@ -1265,19 +879,17 @@ index adce712d5..b3620f0e1 100644
 +        attemptParams: params,
 +      });
        phase = "resolve";
-       return applyAgentHarnessResultClassification(harness, rawResult, params);
-     };
 diff --git a/src/agents/harness/run-safety-contract.test.ts b/src/agents/harness/run-safety-contract.test.ts
 new file mode 100644
-index 000000000..ff435393d
+index 000000000..6ef0cae47
 --- /dev/null
 +++ b/src/agents/harness/run-safety-contract.test.ts
-@@ -0,0 +1,174 @@
+@@ -0,0 +1,218 @@
 +import { describe, expect, it, vi } from "vitest";
 +import {
 +  RunSafetyController,
 +  RunSafetyRootCoordinator,
-+  type RunSafetyBudgetLimits,
++  type RunSafetyControllerLimits,
 +  type RunSafetyContext,
 +} from "../run-safety-controller.js";
 +import {
@@ -1293,7 +905,7 @@ index 000000000..ff435393d
 +} from "./types.js";
 +
 +function createRunSafety(
-+  limits: Partial<RunSafetyBudgetLimits> = {},
++  limits: RunSafetyControllerLimits = {},
 +  runId = "run-1",
 +): RunSafetyContext {
 +  const rootInvocationId = "root-1";
@@ -1380,7 +992,6 @@ index 000000000..ff435393d
 +    runSafety.controller.reserveProviderDispatch({
 +      runId: "run-1",
 +      providerDispatchId,
-+      estimatedPromptTokens: 1,
 +    });
 +    runSafety.controller.completeProviderDispatch(providerDispatchId);
 +    const transport = vi.fn(async () => "sent");
@@ -1399,9 +1010,9 @@ index 000000000..ff435393d
 +    expect(transport).not.toHaveBeenCalled();
 +  });
 +
-+  it("does not call transport when final prompt exposure exceeds the limit", async () => {
++  it("calls transport when final prompt exposure exceeds the legacy threshold", async () => {
 +    const runSafety = createRunSafety({
-+      maxCumulativeEstimatedPromptTokensPerBudgetScope: 32,
++      promptExposure: { mode: "observe", legacyDiagnosticThreshold: 32 },
 +    });
 +    const transport = vi.fn(async () => "sent");
 +    const handler = createAgentHarnessRunAttemptV1(async (_attemptParams, host) => {
@@ -1412,14 +1023,59 @@ index 000000000..ff435393d
 +      return createAttemptResult();
 +    });
 +
-+    await expect(
-+      runAgentHarnessAttemptV1({
-+        handler,
-+        legacyHandlerPresent: false,
-+        attemptParams: createAttemptParams(runSafety),
-+      }),
-+    ).rejects.toThrow("prompt exposure was blocked");
-+    expect(transport).not.toHaveBeenCalled();
++    await runAgentHarnessAttemptV1({
++      handler,
++      legacyHandlerPresent: false,
++      attemptParams: createAttemptParams(runSafety),
++    });
++
++    expect(transport).toHaveBeenCalledOnce();
++    expect(runSafety.controller.terminationReason).toBeUndefined();
++    expect(runSafety.controller.snapshot().promptExposure).toMatchObject({
++      legacyDiagnosticThresholdCrossed: true,
++      knownEstimateDispatchCount: 1,
++      pendingObservationDispatchCount: 0,
++    });
++  });
++
++  it("calls transport when final prompt estimation is unavailable", async () => {
++    const runSafety = createRunSafety();
++    const transport = vi.fn(async () => "sent");
++    const handler = createAgentHarnessRunAttemptV1(async (_attemptParams, host) => {
++      await host.dispatch({
++        finalPayload: {
++          messages: [
++            {
++              role: "user",
++              content: [{ type: "image_url", url: "https://example.test/image.png" }],
++            },
++          ],
++        },
++        transport,
++      });
++      return createAttemptResult();
++    });
++    const attemptParams = createAttemptParams(runSafety);
++    attemptParams.model = {
++      ...attemptParams.model,
++      contextWindow: undefined,
++    } as AgentHarnessAttemptParams["model"];
++
++    await runAgentHarnessAttemptV1({
++      handler,
++      legacyHandlerPresent: false,
++      attemptParams,
++    });
++
++    expect(transport).toHaveBeenCalledOnce();
++    expect(runSafety.controller.terminationReason).toBeUndefined();
++    expect(runSafety.controller.snapshot().promptExposure).toMatchObject({
++      estimateUnavailableDispatchCount: 1,
++      pendingObservationDispatchCount: 0,
++      unavailableReasonCounts: {
++        unknown_media_without_context_window: 1,
++      },
++    });
 +  });
 +
 +  it("requires the same versioned seam for harness compaction", async () => {
@@ -1449,16 +1105,15 @@ index 000000000..ff435393d
 +});
 diff --git a/src/agents/harness/run-safety-contract.ts b/src/agents/harness/run-safety-contract.ts
 new file mode 100644
-index 000000000..d7573b229
+index 000000000..0fffd1e18
 --- /dev/null
 +++ b/src/agents/harness/run-safety-contract.ts
-@@ -0,0 +1,169 @@
+@@ -0,0 +1,147 @@
 +import type { Model } from "../../llm/types.js";
 +import {
-+  estimateRunSafetyPromptTokens,
++  estimateRunSafetyPromptObservation,
 +  type RunSafetyContext,
 +  type RunSafetyTermination,
-+  RunSafetyTerminationKind,
 +} from "../run-safety-controller.js";
 +import type {
 +  AgentHarnessAttemptParams,
@@ -1546,9 +1201,6 @@ index 000000000..d7573b229
 +    const reservation = runSafety.controller.reserveProviderDispatch({
 +      runId,
 +      providerDispatchId,
-+      // Reserve the logical send first. Final prompt exposure is authoritative
-+      // only after the harness has supplied its immutable dispatch payload.
-+      estimatedPromptTokens: 1,
 +    });
 +    if (!reservation.allowed) {
 +      throw new AgentHarnessRunSafetyContractError(
@@ -1557,28 +1209,10 @@ index 000000000..d7573b229
 +      );
 +    }
 +    try {
-+      const estimate = estimateRunSafetyPromptTokens(finalPayload, model);
-+      if (!estimate.ok) {
-+        const reason = runSafety.controller.tryTerminate({
-+          kind: RunSafetyTerminationKind.RunPromptEstimateUnavailable,
-+          runId,
-+        });
-+        throw new AgentHarnessRunSafetyContractError(
-+          "Agent harness final payload could not be estimated safely.",
-+          reason,
-+        );
-+      }
-+      const refinement = runSafety.controller.refineProviderPromptEstimate({
-+        runId,
++      runSafety.controller.observeProviderPromptEstimate({
 +        providerDispatchId,
-+        estimatedPromptTokens: estimate.estimatedPromptTokens,
++        observation: estimateRunSafetyPromptObservation(finalPayload, model),
 +      });
-+      if (!refinement.allowed) {
-+        throw new AgentHarnessRunSafetyContractError(
-+          "Agent harness prompt exposure was blocked by run safety.",
-+          refinement.reason,
-+        );
-+      }
 +      return await transport(finalPayload);
 +    } finally {
 +      runSafety.controller.completeProviderDispatch(providerDispatchId);
@@ -1626,9 +1260,7 @@ diff --git a/src/agents/harness/selection.test.ts b/src/agents/harness/selection
 index 26a5a6941..54e5356f0 100644
 --- a/src/agents/harness/selection.test.ts
 +++ b/src/agents/harness/selection.test.ts
-@@ -8,8 +8,16 @@ import type {
-   EmbeddedRunAttemptParams,
-   EmbeddedRunAttemptResult,
+@@ -10,4 +10,12 @@ import type {
  } from "../embedded-agent-runner/run/types.js";
 -import { maybeCompactAgentHarnessSession } from "./compaction.js";
 -import { clearAgentHarnesses, registerAgentHarness } from "./registry.js";
@@ -1643,37 +1275,21 @@ index 26a5a6941..54e5356f0 100644
 +  createAgentHarnessRunAttemptV1,
 +} from "./run-safety-contract.js";
  import {
-   resolveAgentHarnessPolicy,
-   resolveAvailableAgentHarnessPolicy,
-@@ -18,7 +26,7 @@ import {
- } from "./selection.js";
- import type { AgentHarness } from "./types.js";
+@@ -20,3 +28,3 @@ import type { AgentHarness } from "./types.js";
  
 -const agentRunAttempt = vi.fn<AgentHarness["runAttempt"]>(async () =>
 +const agentRunAttempt = vi.fn<NonNullable<AgentHarness["runAttempt"]>>(async () =>
    createAttemptResult("openclaw"),
- );
- const compactAuthMocks = vi.hoisted(() => ({
-@@ -32,7 +40,7 @@ vi.mock("./builtin-openclaw.js", () => ({
-     label: "OpenClaw embedded agent",
-     contextEngineHostCapabilities: OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST.capabilities,
+@@ -34,3 +42,3 @@ vi.mock("./builtin-openclaw.js", () => ({
      supports: () => ({ supported: true, priority: 0 }),
 -    runAttempt: agentRunAttempt,
 +    runAttemptV1: createAgentHarnessRunAttemptV1(async (params) => agentRunAttempt(params)),
    }),
- }));
- vi.mock("../model-auth.js", () => ({
-@@ -89,6 +97,7 @@ afterEach(() => {
- });
- 
+@@ -91,2 +99,3 @@ afterEach(() => {
  function createAttemptParams(config?: OpenClawConfig): EmbeddedRunAttemptParams {
 +  const coordinator = new RunSafetyRootCoordinator("root-1");
    return {
-     prompt: "hello",
-     sessionId: "session-1",
-@@ -104,9 +113,60 @@ function createAttemptParams(config?: OpenClawConfig): EmbeddedRunAttemptParams
-     modelRegistry: {} as never,
-     thinkLevel: "low",
+@@ -106,2 +115,9 @@ function createAttemptParams(config?: OpenClawConfig): EmbeddedRunAttemptParams
      config,
 +    runSafety: {
 +      coordinator,
@@ -1683,7 +1299,7 @@ index 26a5a6941..54e5356f0 100644
 +      }),
 +    },
    } as EmbeddedRunAttemptParams;
- }
+@@ -109,2 +125,46 @@ function createAttemptParams(config?: OpenClawConfig): EmbeddedRunAttemptParams
  
 +function registerAgentHarness(harness: AgentHarness, options?: { ownerPluginId?: string }): void {
 +  const legacyRunAttempt = harness.runAttempt;
@@ -1730,11 +1346,7 @@ index 26a5a6941..54e5356f0 100644
 +}
 +
  function createAttemptResult(sessionIdUsed: string): EmbeddedRunAttemptResult {
-   return {
-     aborted: false,
-@@ -817,6 +877,85 @@ describe("selectAgentHarness", () => {
-     });
-   });
+@@ -819,2 +879,81 @@ describe("selectAgentHarness", () => {
  
 +  it("compacts a production-shaped request without a run id or run-safety scope", async () => {
 +    // Manual compact RPC, /compact, memory flush, and native CLI harness
@@ -1816,15 +1428,11 @@ index 26a5a6941..54e5356f0 100644
 +  });
 +
    it("keeps compaction recoverable when auth profile lookup fails", async () => {
-     compactAuthMocks.getApiKeyForModel.mockRejectedValue(new Error("missing auth profile"));
-     const compact = vi.fn<NonNullable<AgentHarness["compact"]>>(async () => ({
 diff --git a/src/agents/harness/types.ts b/src/agents/harness/types.ts
 index 9af8ba453..58ffe644d 100644
 --- a/src/agents/harness/types.ts
 +++ b/src/agents/harness/types.ts
-@@ -77,7 +77,13 @@ export type AgentHarnessRunCapability = {
-   contextEngineHostCapabilities?: readonly import("../../context-engine/types.js").ContextEngineHostCapability[];
-   deliveryDefaults?: AgentHarnessDeliveryDefaults;
+@@ -79,3 +79,9 @@ export type AgentHarnessRunCapability = {
    supports(ctx: AgentHarnessSupportContext): AgentHarnessSupport;
 -  runAttempt(params: AgentHarnessAttemptParams): Promise<AgentHarnessAttemptResult>;
 +  /**
@@ -1835,25 +1443,17 @@ index 9af8ba453..58ffe644d 100644
 +  runAttempt?(params: AgentHarnessAttemptParams): Promise<AgentHarnessAttemptResult>;
 +  runAttemptV1?: import("./run-safety-contract.js").AgentHarnessRunAttemptHandlerV1;
  };
- 
- export type AgentHarnessSideQuestionCapability = {
-@@ -92,7 +98,9 @@ export type AgentHarnessClassificationCapability = {
- };
- 
+@@ -94,3 +100,5 @@ export type AgentHarnessClassificationCapability = {
  export type AgentHarnessCompactionCapability = {
 +  /** Legacy unversioned capability. The host rejects this before invocation. */
    compact?(params: AgentHarnessCompactParams): Promise<AgentHarnessCompactResult | undefined>;
 +  compactV1?: import("./run-safety-contract.js").AgentHarnessCompactHandlerV1;
  };
- 
- export type AgentHarnessSessionLifecycleCapability = {
 diff --git a/src/plugin-sdk/agent-harness-runtime.ts b/src/plugin-sdk/agent-harness-runtime.ts
 index f82214274..6a07728f8 100644
 --- a/src/plugin-sdk/agent-harness-runtime.ts
 +++ b/src/plugin-sdk/agent-harness-runtime.ts
-@@ -41,6 +41,15 @@ export type {
-   AgentHarnessSupport,
-   AgentHarnessSupportContext,
+@@ -43,2 +43,11 @@ export type {
  } from "../agents/harness/types.js";
 +export {
 +  AgentHarnessRunSafetyContractVersion,
@@ -1865,26 +1465,18 @@ index f82214274..6a07728f8 100644
 +  type AgentHarnessRunSafetyHostV1,
 +} from "../agents/harness/run-safety-contract.js";
  export type {
-   EmbeddedRunAttemptParams,
-   EmbeddedRunAttemptResult,
-@@ -154,9 +163,7 @@ export {
-   resolveActiveEmbeddedRunSessionId,
-   setActiveEmbeddedRun,
+@@ -156,5 +165,3 @@ export {
  };
 -export type {
 -  AbortAndDrainEmbeddedAgentRunResult as AbortAndDrainAgentHarnessRunResult,
 -};
 +export type { AbortAndDrainEmbeddedAgentRunResult as AbortAndDrainAgentHarnessRunResult };
  
- /**
-  * @deprecated Active-run queueing is an internal runtime concern. This legacy
 diff --git a/src/plugins/registry.ts b/src/plugins/registry.ts
 index 34fc1a7be..88a50f5f7 100644
 --- a/src/plugins/registry.ts
 +++ b/src/plugins/registry.ts
-@@ -1067,7 +1067,10 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
-       });
-       return;
+@@ -1069,3 +1069,6 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
      }
 -    if (typeof harness.supports !== "function" || typeof harness.runAttempt !== "function") {
 +    if (
@@ -1892,5 +1484,3 @@ index 34fc1a7be..88a50f5f7 100644
 +      (typeof harness.runAttemptV1 !== "function" && typeof harness.runAttempt !== "function")
 +    ) {
        pushDiagnostic({
-         level: "error",
-         pluginId: record.id,

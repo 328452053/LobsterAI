@@ -14,6 +14,30 @@ import {
 const patchFile = 'openclaw-varying-args-no-progress-core.patch';
 
 describe('OpenClaw varying-arguments no-progress core patch', () => {
+  test('contains one complete diff block for every required core run-safety file', () => {
+    const patch = readCurrentOpenClawPatch(patchFile);
+    for (const file of [
+      'packages/agent-core/src/agent.run-safety-tool-budget.test.ts',
+      'src/agents/cli-runner.run-safety.test.ts',
+      'src/agents/cli-runner/run-safety.ts',
+      'src/agents/embedded-agent-runner/run.run-safety.test.ts',
+      'src/agents/embedded-agent-runner/run/run-safety-gate.test.ts',
+      'src/agents/embedded-agent-runner/run/run-safety-gate.ts',
+      'src/agents/provider-run-safety-contract.test.ts',
+      'src/agents/provider-run-safety-contract.ts',
+      'src/agents/run-safety-controller.ts',
+      'src/agents/run-safety-controller.test.ts',
+      'src/agents/run-safety-registry.ts',
+      'src/agents/run-safety-registry.test.ts',
+      'src/context-engine/run-safety-compaction.ts',
+      'src/context-engine/run-safety-compaction.test.ts',
+      'src/llm/run-safety-provider-dispatch-context.ts',
+    ]) {
+      const header = `diff --git a/${file} b/${file}`;
+      expect(patch.split(header)).toHaveLength(2);
+    }
+  });
+
   test('keeps all OpenClaw and LobsterAI termination wire kinds exactly aligned', () => {
     const controllerAdded = readAddedPatchLines(
       readCurrentOpenClawPatchFileDiff(patchFile, 'src/agents/run-safety-controller.ts'),
@@ -54,17 +78,18 @@ describe('OpenClaw varying-arguments no-progress core patch', () => {
     for (const snippet of [
       'maxToolCallReservationsPerBudgetScope: 64',
       'maxProviderDispatchesPerBudgetScope: 32',
-      'maxCumulativeEstimatedPromptTokensPerBudgetScope: 2_000_000',
+      'legacyDiagnosticThreshold: 2_000_000',
       'warningRatio: 0.75',
       'reserveToolBatch(params: {',
       'reserveProviderDispatch(params: {',
+      'observeProviderPromptEstimate(params: {',
     ]) {
       expect(controllerAdded).toContain(snippet);
     }
     for (const snippet of [
       'params.controller.reserveProviderDispatch({',
-      'const finalEstimate = estimateRunSafetyPromptTokens(finalPayload, payloadModel);',
-      'params.controller.refineProviderPromptEstimate({',
+      'estimateRunSafetyPromptObservation(finalPayload, payloadModel)',
+      'params.controller.observeProviderPromptEstimate({',
       'maxRetries: 0',
     ]) {
       expect(providerGateAdded).toContain(snippet);
@@ -94,6 +119,99 @@ describe('OpenClaw varying-arguments no-progress core patch', () => {
     ]);
   });
 
+  test('keeps legacy prompt terminals receive-only at targeted producer call sites', () => {
+    const controllerAdded = readAddedPatchLines(
+      readCurrentOpenClawPatchFileDiff(patchFile, 'src/agents/run-safety-controller.ts'),
+    );
+    const producerSources = [
+      controllerAdded,
+      readAddedPatchLines(
+        readCurrentOpenClawPatchFileDiff(
+          patchFile,
+          'src/agents/embedded-agent-runner/run/run-safety-gate.ts',
+        ),
+      ),
+      readAddedPatchLines(
+        readCurrentOpenClawPatchFileDiff(patchFile, 'src/agents/cli-runner/run-safety.ts'),
+      ),
+      readAddedPatchLines(
+        readCurrentOpenClawPatchFileDiff(patchFile, 'src/context-engine/run-safety-compaction.ts'),
+      ),
+    ];
+
+    // The wire values intentionally remain in the controller enum for old
+    // persisted/runtime payloads. Only terminal-producing call sites are
+    // forbidden, so this must not become a whole-patch string assertion.
+    expect(controllerAdded).toContain(
+      'RunPromptExposureBudget: "run_prompt_exposure_budget"',
+    );
+    expect(controllerAdded).toContain(
+      'RunPromptEstimateUnavailable: "run_prompt_estimate_unavailable"',
+    );
+    for (const source of producerSources) {
+      expect(source).not.toContain(
+        'kind: RunSafetyTerminationKind.RunPromptExposureBudget',
+      );
+      expect(source).not.toContain(
+        'kind: RunSafetyTerminationKind.RunPromptEstimateUnavailable',
+      );
+      expect(source).not.toContain('refineProviderPromptEstimate(');
+    }
+    expect(controllerAdded).not.toContain(
+      'continuationClosedReasonValue = RunSafetyTerminationKind.RunPromptExposureBudget',
+    );
+  });
+
+  test('keeps prompt exposure observe-only and estimator failures fail-open', () => {
+    const controllerAdded = readAddedPatchLines(
+      readCurrentOpenClawPatchFileDiff(patchFile, 'src/agents/run-safety-controller.ts'),
+    );
+    const gateTestsAdded = readAddedPatchLines(
+      readCurrentOpenClawPatchFileDiff(
+        patchFile,
+        'src/agents/embedded-agent-runner/run/run-safety-gate.test.ts',
+      ),
+    );
+
+    for (const snippet of [
+      'PromptObservationStatus',
+      'PromptEstimateSource',
+      'PromptEstimateUnavailableReason',
+      'legacyEstimatedExposureUnitsTotal',
+      'knownEstimateDispatchCount',
+      'estimateUnavailableDispatchCount',
+      'pendingObservationDispatchCount',
+      'legacyDiagnosticThresholdCrossed',
+      'run_prompt_exposure_threshold_crossed',
+      'run_prompt_exposure_estimate_unavailable_observed',
+      'run_safety_scope_summary',
+    ]) {
+      expect(controllerAdded).toContain(snippet);
+    }
+    expect(controllerAdded).not.toContain(
+      'maxCumulativeEstimatedPromptTokensPerBudgetScope',
+    );
+    expect(controllerAdded).toMatch(
+      /observeProviderPromptEstimate\(params: \{[\s\S]*?\}\): void \{/,
+    );
+    const warningDimension = controllerAdded.match(
+      /export type RunSafetyWarningDimension =(?<body>[\s\S]*?);/,
+    );
+    expect(warningDimension?.groups?.body).toBeTruthy();
+    expect(warningDimension?.groups?.body).not.toContain('prompt_exposure');
+    expect(gateTestsAdded).toContain(
+      'continues transport when final prompt estimation is unavailable',
+    );
+    expectPatchContains(patchFile, [
+      'allows the configured provider dispatches and blocks the next one before dispatch',
+      'keeps prompt observations immutable and idempotent',
+      'observes prompt exposure above the legacy threshold without terminating',
+      'records an unavailable prompt estimate without terminating',
+      'spawns after recording unavailable telemetry when the final CLI payload cannot be estimated',
+      'calls compaction transport when final prompt estimation is unavailable',
+    ]);
+  });
+
   test('closes audited provider retry, preload, cache, and provenance gaps', () => {
     const attemptDiff = readCurrentOpenClawPatchFileDiff(
       patchFile,
@@ -102,13 +220,8 @@ describe('OpenClaw varying-arguments no-progress core patch', () => {
     const safetyWrapperIndex = attemptDiff.indexOf(
       '+        activeSession.agent.streamFn = wrapStreamFnWithRunSafety({',
     );
-    const thinkingRecoveryPolicyIndex = attemptDiff.indexOf(
-      'transcriptPolicy.preserveSignatures',
-      safetyWrapperIndex,
-    );
 
     expect(safetyWrapperIndex).toBeGreaterThanOrEqual(0);
-    expect(thinkingRecoveryPolicyIndex).toBeGreaterThan(safetyWrapperIndex);
     expectPatchContains(patchFile, [
       'maxAttempts: 1',
       'internal transport retry is disabled for this run',
@@ -244,22 +357,25 @@ describe('OpenClaw varying-arguments no-progress core patch', () => {
     ]);
   });
 
-  test('estimates prompt exposure in CJK-aware tokens instead of raw bytes', () => {
+  test('preserves the CJK-aware legacy prompt estimator instead of raw bytes', () => {
     const controllerAdded = readAddedPatchLines(
       readCurrentOpenClawPatchFileDiff(patchFile, 'src/agents/run-safety-controller.ts'),
     );
 
-    // The 2M budget is calibrated in tokens (FR-12.1). Counting serialized
-    // UTF-8 bytes shrank it 3-4x (worst for CJK) and hard-blocked any single
-    // payload above 2MB on its first dispatch.
+    // This is a legacy exposure unit, not provider usage or billing data. Its
+    // algorithm must nevertheless stay stable across the P0 gate removal
+    // so telemetry remains comparable with the retired 2M policy.
     expect(controllerAdded).toContain(
       'import { estimateStringChars, estimateTokensFromChars } from "../utils/cjk-chars.js";',
     );
     expect(controllerAdded).toContain('INLINE_MEDIA_TOKEN_ESTIMATE');
-    expect(controllerAdded).toContain('source: "stable_text_tokens"');
+    expect(controllerAdded).toContain('StableTextTokens: "stable_text_tokens"');
+    expect(controllerAdded).toContain(
+      'source: PromptEstimateSource.StableTextTokens',
+    );
     expect(controllerAdded).not.toContain('Buffer.byteLength(serialized');
     expectPatchContains(patchFile, [
-      'estimates tokens, not bytes, so the configured budget keeps its calibration',
+      'estimates tokens, not bytes, so legacy telemetry keeps its calibration',
       'weights CJK content fairly instead of tripling it through UTF-8 bytes',
       'caps inline base64 media at a fixed conservative estimate',
     ]);

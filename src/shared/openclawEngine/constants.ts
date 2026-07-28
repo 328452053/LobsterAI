@@ -38,6 +38,16 @@ export const OpenClawEngineErrorCode = {
    * from the leftover archive was not possible.
    */
   RuntimeEntryMissing: 'runtime_entry_missing',
+  /**
+   * runtime-build-info.json does not match package.json's pinned OpenClaw
+   * version and run-safety capability contract.
+   */
+  RuntimeContractMismatch: 'runtime_contract_mismatch',
+  /**
+   * openclaw.json is missing or does not contain LobsterAI's managed
+   * run-safety policy, so it must not be parsed by the bundled runtime.
+   */
+  RuntimeConfigMismatch: 'runtime_config_mismatch',
 } as const;
 
 export type OpenClawEngineErrorCode =

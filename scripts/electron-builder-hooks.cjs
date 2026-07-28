@@ -1,6 +1,7 @@
 'use strict';
 
 const path = require('path');
+const { createHash } = require('crypto');
 const { existsSync, readdirSync, statSync, mkdirSync, readFileSync, rmSync, cpSync, lstatSync } = require('fs');
 const { spawnSync } = require('child_process');
 const asar = require('@electron/asar');
@@ -55,6 +56,81 @@ function readRuntimeBuildInfo(runtimeRoot) {
   } catch {
     return null;
   }
+}
+
+function readExpectedOpenClawRuntimeContract() {
+  const pkgPath = path.join(__dirname, '..', 'package.json');
+  let pkg;
+  try {
+    pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
+  } catch (error) {
+    throw new Error(
+      '[electron-builder-hooks] Failed to read package.json for the OpenClaw runtime contract. '
+      + `${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+
+  const openclawVersion = pkg?.openclaw?.version;
+  const runSafetyContract = pkg?.openclaw?.runSafetyContract;
+  if (
+    typeof openclawVersion !== 'string'
+    || openclawVersion.length === 0
+    || typeof runSafetyContract !== 'string'
+    || runSafetyContract.length === 0
+  ) {
+    throw new Error(
+      '[electron-builder-hooks] package.json must declare openclaw.version '
+      + 'and openclaw.runSafetyContract before packaging.',
+    );
+  }
+
+  const patchesDir = path.join(__dirname, 'patches', openclawVersion);
+  const patchHash = computeOpenClawPatchHash(patchesDir);
+  return { openclawVersion, runSafetyContract, patchHash };
+}
+
+function computeOpenClawPatchHash(patchesDir) {
+  if (!existsSync(patchesDir)) {
+    return '';
+  }
+
+  const patchFiles = readdirSync(patchesDir)
+    .filter((name) => name.endsWith('.patch'))
+    .sort();
+  const hash = createHash('sha256');
+  for (const patchFile of patchFiles) {
+    hash.update(readFileSync(path.join(patchesDir, patchFile)));
+  }
+  return hash.digest('hex');
+}
+
+function assertOpenClawRuntimeBuildInfoMatchesExpected(buildInfo, expected, buildHint) {
+  const actualVersion = typeof buildInfo?.openclawVersion === 'string'
+    ? buildInfo.openclawVersion
+    : null;
+  const actualContract = typeof buildInfo?.runSafetyContract === 'string'
+    ? buildInfo.runSafetyContract
+    : null;
+  const actualPatchHash = typeof buildInfo?.patchHash === 'string'
+    ? buildInfo.patchHash
+    : null;
+
+  if (
+    actualVersion === expected.openclawVersion
+    && actualContract === expected.runSafetyContract
+    && actualPatchHash === expected.patchHash
+  ) {
+    return;
+  }
+
+  throw new Error(
+    '[electron-builder-hooks] Bundled OpenClaw runtime contract mismatch. '
+    + `Expected version=${expected.openclawVersion}, runSafetyContract=${expected.runSafetyContract}; `
+    + `patchHash=${expected.patchHash || 'missing'}; `
+    + `found version=${actualVersion || 'missing'}, runSafetyContract=${actualContract || 'missing'}, `
+    + `patchHash=${actualPatchHash || 'missing'}. `
+    + `Run \`${buildHint}\` before packaging.`,
+  );
 }
 
 function getOpenClawRuntimeBuildHint(targetId) {
@@ -197,6 +273,11 @@ function ensureBundledLocalExtensions(runtimeRoot, buildHint) {
 function ensureBundledOpenClawRuntime(context) {
   const { runtimeRoot, targetId } = syncCurrentOpenClawRuntimeForTarget(context);
   const buildHint = getOpenClawRuntimeBuildHint(targetId);
+  assertOpenClawRuntimeBuildInfoMatchesExpected(
+    readRuntimeBuildInfo(runtimeRoot),
+    readExpectedOpenClawRuntimeContract(),
+    buildHint,
+  );
 
   ensureBundledLocalExtensions(runtimeRoot, buildHint);
 
@@ -614,4 +695,6 @@ async function afterPack(context) {
 module.exports = {
   beforePack,
   afterPack,
+  assertOpenClawRuntimeBuildInfoMatchesExpected,
+  computeOpenClawPatchHash,
 };

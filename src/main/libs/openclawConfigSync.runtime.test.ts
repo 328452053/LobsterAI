@@ -2653,6 +2653,20 @@ describe('OpenClawConfigSync runtime config output', () => {
   test('enables managed OpenClaw run safety and tool loop detection', async () => {
     const sync = await createSync();
 
+    fs.writeFileSync(configPath, JSON.stringify({
+      gateway: { mode: 'local' },
+      agents: {
+        defaults: {
+          runSafety: {
+            maxToolCallReservationsPerBudgetScope: 64,
+            maxProviderDispatchesPerBudgetScope: 32,
+            maxCumulativeEstimatedPromptTokensPerBudgetScope: 2_000_000,
+            warningRatio: 0.75,
+          },
+        },
+      },
+    }, null, 2));
+
     const result = sync.sync('tool-loop-detection');
     expect(result.ok).toBe(true);
 
@@ -2660,9 +2674,15 @@ describe('OpenClawConfigSync runtime config output', () => {
     expect(config.agents.defaults.runSafety).toEqual({
       maxToolCallReservationsPerBudgetScope: 64,
       maxProviderDispatchesPerBudgetScope: 32,
-      maxCumulativeEstimatedPromptTokensPerBudgetScope: 2_000_000,
       warningRatio: 0.75,
+      promptExposure: {
+        mode: 'observe',
+        legacyDiagnosticThreshold: 2_000_000,
+      },
     });
+    expect(config.agents.defaults.runSafety).not.toHaveProperty(
+      'maxCumulativeEstimatedPromptTokensPerBudgetScope',
+    );
     expect(config.tools.loopDetection).toEqual({
       enabled: true,
       historySize: 40,
@@ -2679,6 +2699,38 @@ describe('OpenClawConfigSync runtime config output', () => {
         variantNoProgress: true,
       },
     });
+  });
+
+  test('writes managed run safety in the fresh-install minimal config', async () => {
+    mockRuntimeState.rawApiConfig = {
+      config: null,
+      providerMetadata: undefined,
+    } as never;
+    const sync = await createSync();
+
+    const result = sync.sync('fresh-install-run-safety');
+    expect(result.ok).toBe(true);
+
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    expect(config).toMatchObject({
+      gateway: { mode: 'local' },
+      agents: {
+        defaults: {
+          runSafety: {
+            maxToolCallReservationsPerBudgetScope: 64,
+            maxProviderDispatchesPerBudgetScope: 32,
+            warningRatio: 0.75,
+            promptExposure: {
+              mode: 'observe',
+              legacyDiagnosticThreshold: 2_000_000,
+            },
+          },
+        },
+      },
+    });
+    expect(config.agents.defaults.runSafety).not.toHaveProperty(
+      'maxCumulativeEstimatedPromptTokensPerBudgetScope',
+    );
   });
 
   test('writes browser and web fetch access settings', async () => {

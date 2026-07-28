@@ -41,3 +41,16 @@ test.each(['zh', 'en'] as const)(
     }
   },
 );
+
+test.each([
+  RunSafetyTerminationKind.RunPromptExposureBudget,
+  RunSafetyTerminationKind.RunPromptEstimateUnavailable,
+])('legacy receive-only prompt terminal %s keeps its localized message', (kind) => {
+  const messages = (['zh', 'en'] as const).map((language) => {
+    setLanguage(language);
+    return formatRunSafetyTerminationMessage(createTermination(kind));
+  });
+
+  expect(messages.every(message => message.trim().length > 0)).toBe(true);
+  expect(messages[0]).not.toBe(messages[1]);
+});
