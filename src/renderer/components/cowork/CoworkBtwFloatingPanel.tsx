@@ -21,6 +21,7 @@ import {
   normalizeCoworkBtwSelectedTextQuestion,
 } from '../../../shared/cowork/btw';
 import { i18nService } from '../../services/i18n';
+import EditIcon from '../icons/EditIcon';
 import MarkdownContent from '../MarkdownContent';
 import {
   clampCoworkBtwPanelGeometry,
@@ -32,6 +33,7 @@ import {
   getInitialCoworkBtwPanelGeometry,
   resizeCoworkBtwPanelGeometry,
 } from './coworkBtwPanelGeometry';
+import { MessageActionButton, MessageCopyButton } from './MessageActionButton';
 
 interface CoworkBtwFloatingPanelProps {
   thread: CoworkBtwThread;
@@ -113,6 +115,22 @@ const logPanelGeometry = (
   }
 };
 
+const logQuestionLoadedForEditing = (
+  sessionId: string,
+  questionLength: number,
+): void => {
+  try {
+    window.electron?.log?.fromRenderer?.(
+      'debug',
+      'CoworkBtw',
+      `loaded a previous side-chat question into the draft for session ${sessionId}; `
+      + `chars=${questionLength}.`,
+    );
+  } catch (error) {
+    console.debug('[CoworkBtwFloatingPanel] failed to forward edit diagnostic.', error);
+  }
+};
+
 const CoworkBtwFloatingPanel: React.FC<CoworkBtwFloatingPanelProps> = ({
   thread,
   promptAnchorRef,
@@ -138,6 +156,10 @@ const CoworkBtwFloatingPanel: React.FC<CoworkBtwFloatingPanelProps> = ({
   const resizeRef = useRef<ResizePointerOperation | null>(null);
   const messageListRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const onDraftChangeRef = useRef(onDraftChange);
+  onDraftChangeRef.current = onDraftChange;
+  const sessionIdRef = useRef(thread.sessionId);
+  sessionIdRef.current = thread.sessionId;
   const pendingEntry = useMemo(
     () => thread.entries.find(entry => entry.status === CoworkBtwStatus.Pending),
     [thread.entries],
@@ -151,6 +173,16 @@ const CoworkBtwFloatingPanel: React.FC<CoworkBtwFloatingPanelProps> = ({
   const canSubmit = normalizedDraftLength > 0
     && normalizedDraftLength <= COWORK_BTW_QUESTION_MAX_CHARS
     && !pending;
+  const handleEditQuestion = useCallback((question: string) => {
+    onDraftChangeRef.current(question);
+    window.requestAnimationFrame(() => {
+      const input = inputRef.current;
+      if (!input) return;
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    });
+    logQuestionLoadedForEditing(sessionIdRef.current, question.length);
+  }, []);
   // Geometry and draft changes are high-frequency. Keep the potentially large
   // Markdown subtree stable unless its content, resolver, or locale changes.
   const renderedEntries = useMemo(() => (
@@ -163,12 +195,24 @@ const CoworkBtwFloatingPanel: React.FC<CoworkBtwFloatingPanelProps> = ({
       <div className="space-y-3">
         {thread.entries.map(entry => (
           <article key={entry.runId} className="space-y-2">
-            <div className="flex justify-end">
+            <div className="group flex flex-col items-end">
               <div className="w-fit max-w-[85%] rounded-2xl bg-surface-raised px-3 py-2 text-sm whitespace-pre-wrap break-words text-foreground shadow-subtle">
                 {entry.question}
               </div>
+              <div className="pointer-events-none -mr-1 mt-0.5 flex min-h-7 items-center justify-end opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
+                <MessageCopyButton content={entry.question} />
+                <MessageActionButton
+                  label={i18nService.t('coworkReEdit')}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    handleEditQuestion(entry.question);
+                  }}
+                >
+                  <EditIcon className="h-4 w-4" />
+                </MessageActionButton>
+              </div>
             </div>
-            <div className="mr-8 px-1 py-1">
+            <div className="group mr-8 px-1 py-1">
               {entry.status === CoworkBtwStatus.Pending && (
                 <div className="flex items-center gap-2 text-sm text-muted">
                   <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
@@ -183,6 +227,11 @@ const CoworkBtwFloatingPanel: React.FC<CoworkBtwFloatingPanelProps> = ({
                   resolveLocalFilePath={resolveLocalFilePath}
                   showRevealInFolderAction
                 />
+              )}
+              {entry.status === CoworkBtwStatus.Answered && entry.answer && (
+                <div className="pointer-events-none -ml-1 mt-0.5 flex min-h-7 items-center opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
+                  <MessageCopyButton content={entry.answer} />
+                </div>
               )}
               {entry.status === CoworkBtwStatus.Failed && (
                 <p className="whitespace-pre-wrap break-words text-sm text-danger">
@@ -202,6 +251,7 @@ const CoworkBtwFloatingPanel: React.FC<CoworkBtwFloatingPanelProps> = ({
   ), [
     emptyThreadText,
     failedText,
+    handleEditQuestion,
     pendingText,
     resolveLocalFilePath,
     stoppedText,
@@ -389,7 +439,7 @@ const CoworkBtwFloatingPanel: React.FC<CoworkBtwFloatingPanelProps> = ({
         </div>
 
         <div className="shrink-0 border-t border-border-subtle bg-surface p-3">
-          <div className="rounded-2xl border border-border bg-background shadow-card transition-[border-color,box-shadow] duration-200 focus-within:border-primary/35 focus-within:shadow-elevated">
+          <div className="rounded-2xl border border-border bg-surface shadow-card transition-[border-color,box-shadow] duration-200 focus-within:border-primary/35 focus-within:shadow-elevated">
             <textarea
               ref={inputRef}
               value={thread.draft}

@@ -174,12 +174,21 @@ the normal message-list persistence model.
   the existing sanitized Markdown renderer.
 - The window reuses the main conversation's theme tokens, borders,
   rounded-input, and send-button treatments. Its shell uses the elevated
-  `surface` layer while the composer uses the inset `background` layer. A
-  modal-level shadow and subtle outline keep it distinct when it overlaps the
-  conversation, especially in dark themes.
+  `surface` layer, and the composer uses the same lighter `surface` layer
+  instead of the theme's darker canvas background. The composer's border and
+  shadow preserve separation from the footer. A modal-level shadow and subtle
+  outline keep the window distinct when it overlaps the conversation,
+  especially in dark themes.
 - User question bubbles are right-aligned, shrink to short content, and are
   capped at 85% of the message-area width so short questions do not look like
   full-width banners.
+- Hovering or keyboard-focusing a question reveals the same copy and re-edit
+  actions used by the main conversation. Re-editing replaces the current side
+  draft, focuses the composer, and never mutates or resubmits the historical
+  exchange.
+- Hovering or keyboard-focusing an answered assistant message reveals the main
+  conversation's copy action. Clipboard failures use the shared renderer
+  fallback and diagnostic path.
 - The footer contains a multiline editable input. Enter submits and
   Shift+Enter inserts a line break; the request is normalized to OpenClaw's
   single-line command grammar only at submission.
@@ -452,4 +461,6 @@ remain authoritative.
     not send until the editable side-chat input is submitted;
   - a follow-up can refer to a prior side-chat answer without adding either
     exchange to the main history;
+  - question copy/re-edit and answer copy actions match the main conversation;
+    re-edit only replaces the current side draft and does not send;
   - neither question nor answer appears in history after reload.
