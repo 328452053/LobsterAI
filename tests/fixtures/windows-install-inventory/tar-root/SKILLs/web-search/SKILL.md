@@ -1,1 +1,0 @@
-# Fixture Web Search Skill

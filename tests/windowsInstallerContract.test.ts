@@ -15,9 +15,6 @@ const extractTemplate = repoFile(
 const installerTemplate = repoFile(
   'node_modules/app-builder-lib/templates/nsis/include/installer.nsh',
 );
-const installUtilTemplate = repoFile(
-  'node_modules/app-builder-lib/templates/nsis/include/installUtil.nsh',
-);
 const rootInstallerTemplate = repoFile(
   'node_modules/app-builder-lib/templates/nsis/installer.nsi',
 );
@@ -26,10 +23,7 @@ const webPackageTemplate = repoFile(
 );
 const appBuilderPatch = repoFile('patches/app-builder-lib+24.13.3.patch');
 const electronBuilderConfig = JSON.parse(repoFile('electron-builder.json')) as {
-  nsis?: {
-    deleteAppDataOnUninstall?: boolean;
-    oneClick?: boolean;
-  };
+  nsis?: { deleteAppDataOnUninstall?: boolean };
 };
 
 const classifyFreshTarget = ({
@@ -70,10 +64,9 @@ describe('Windows installer hardening contracts', () => {
     expect(installerInclude).toContain('phase=old-install-rename-complete attempt_id=');
     expect(installerInclude).toContain('status=$lobsterOldInstallRenameStatus');
     expect(installerInclude).not.toContain('phase=old-install-cleanup-complete');
-    expect(installerInclude).not.toContain('phase=old-install-cleanup-scheduled');
   });
 
-  test('captures shortcut state and keeps old-tree execution unreachable', () => {
+  test('captures shortcut state before rename and explicitly controls old uninstallers', () => {
     const shortcutProbe = installSection.indexOf('Var /GLOBAL keepShortcuts');
     const checkAppRunning = installSection.indexOf('!insertmacro CHECK_APP_RUNNING');
     const oldUninstaller = installSection.indexOf(
@@ -90,35 +83,14 @@ describe('Windows installer hardening contracts', () => {
     expect(postUninstallHook).toBeGreaterThan(oldUninstaller);
     expect(postUninstallHook).toBeLessThan(installFiles);
     expect(installerInclude).toContain('phase=old-uninstaller-skipped');
-    expect(installerInclude).toContain('phase=old-tree-execution-blocked');
-    expect(installerInclude).toContain('old_tree_execution=disabled-p0.5');
-    expect(installerInclude).not.toContain('phase=old-uninstaller-start');
-    expect(installerInclude).not.toContain('phase=old-uninstaller-returned');
-    expect(installerInclude).not.toContain('phase=old-uninstaller-complete');
-
-    const wrapperStart = installerInclude.indexOf('!macro customUninstallOldVersion');
-    const wrapperEnd = installerInclude.indexOf(
-      '!macro customAfterUninstallOldVersions',
-      wrapperStart,
-    );
-    const wrapper = installerInclude.slice(wrapperStart, wrapperEnd);
-    expect(wrapper).not.toContain('!insertmacro uninstallOldVersion');
-    expect(wrapper).not.toContain('!insertmacro handleUninstallResult');
-    expect(installUtilTemplate).toContain('!ifmacrodef customUninstallOldVersion');
-    expect(installUtilTemplate).toContain(
-      'uninstaller functions entirely so warning-as-error builds do not retain an',
-    );
-    expect(installUtilTemplate).toContain(
-      'ExecWait \'"$uninstallerFileNameTemp" /S /KEEP_APP_DATA',
-    );
-    expect(installUtilTemplate).toContain(
-      'ExecWait \'"$uninstallerFileName" /S /KEEP_APP_DATA',
-    );
+    expect(installerInclude).toContain('phase=old-uninstaller-start');
+    expect(installerInclude).toContain('phase=old-uninstaller-returned');
+    expect(installerInclude).toContain('phase=old-uninstaller-complete');
   });
 
-  test('applies and verifies Defender exclusion only after the no-execution gate', () => {
+  test('applies and verifies Defender exclusion only after legacy uninstallers', () => {
     expect(installerInclude).toContain('!macro customAfterUninstallOldVersions');
-    expect(installerInclude).toContain('point=post-old-tree-execution-gate');
+    expect(installerInclude).toContain('point=post-old-uninstaller');
     expect(installerInclude).toContain(
       String.raw`$$target = $$env:LOBSTERAI_INSTALL_ROOT;`,
     );
@@ -126,25 +98,15 @@ describe('Windows installer hardening contracts', () => {
     expect(installerInclude).toContain('remove=');
     expect(installerInclude).toContain('after_count=');
     expect(installerInclude).toContain('Remove-MpPreference -ExclusionPath $$targets');
-    expect(installerInclude).toContain('phase=old-install-backup-preserved');
+    expect(installerInclude).toContain('phase=old-install-cleanup-scheduled');
     expect(installerInclude).toContain(
       '${If} $lobsterOldInstallRenameStatus == "committed"',
     );
-    expect(installerInclude).toContain('cleanup_mode=disabled-p0.5');
-    expect(installerInclude.indexOf('phase=old-install-backup-preserved')).toBeGreaterThan(
+    expect(installerInclude).toContain('target=exact-current-backup');
+    expect(installerInclude).not.toContain('target_pattern=$INSTDIR.old');
+    expect(installerInclude.indexOf('phase=old-install-cleanup-scheduled')).toBeGreaterThan(
       installerInclude.indexOf('phase=defender-exclusion-permanent-complete'),
     );
-  });
-
-  test('preserves staged old and failed trees instead of dispatching path-only cleanup', () => {
-    expect(installerInclude).toContain('phase=rollback-failed-tree-preserved');
-    expect(installerInclude).toContain('phase=old-install-backup-preserved');
-    expect(installerInclude).toContain('cleanup_mode=preserve-only-p0.5');
-    expect(installerInclude).toContain('cleanup_mode=disabled-p0.5');
-    expect(installerInclude).not.toContain('LOBSTERAI_FAILED_CLEANUP_PATH');
-    expect(installerInclude).not.toContain('LOBSTERAI_OLD_CLEANUP_PATH');
-    expect(installerInclude).not.toContain('cleanup_mode=deferred');
-    expect(installerInclude).not.toContain('cleanup_mode=async-exec-after-commit');
   });
 
   test('splits embedded package extraction, copying, cache, and size phases', () => {
@@ -191,9 +153,9 @@ describe('Windows installer hardening contracts', () => {
     );
 
     const commit = installerInclude.indexOf('phase=old-install-commit-complete');
-    const preserved = installerInclude.indexOf('phase=old-install-backup-preserved');
+    const cleanup = installerInclude.indexOf('phase=old-install-cleanup-scheduled');
     expect(commit).toBeGreaterThan(-1);
-    expect(preserved).toBeGreaterThan(commit);
+    expect(cleanup).toBeGreaterThan(commit);
   });
 
   test('terminates the attempt after rename verification rollback', () => {
@@ -425,28 +387,6 @@ describe('Windows installer hardening contracts', () => {
     expect(init).toContain('${If} ${isUpdated}');
     expect(init).toContain('${AndIf} ${isForceRun}');
     expect(init).toContain('StrCpy $lobsterInvocationSource "app-update"');
-    expect(installerInclude).toContain(
-      '!define LOBSTER_INSTALL_UI_MODE_WIZARD "wizard"',
-    );
-    expect(installerInclude).toContain(
-      '!define LOBSTER_INSTALL_UI_MODE_PROGRESS_VISIBLE "progress-visible"',
-    );
-    expect(installerInclude).toContain(
-      '!define LOBSTER_INSTALL_UI_MODE_SILENT "silent"',
-    );
-    expect(init).toContain(
-      'StrCpy $lobsterUiMode "${LOBSTER_INSTALL_UI_MODE_WIZARD}"',
-    );
-    expect(init).toContain(
-      [
-        '${If} ${Silent}',
-        '    StrCpy $lobsterUiMode "${LOBSTER_INSTALL_UI_MODE_SILENT}"',
-        '  ${ElseIf} ${isUpdated}',
-        '    StrCpy $lobsterUiMode "${LOBSTER_INSTALL_UI_MODE_PROGRESS_VISIBLE}"',
-        '  ${EndIf}',
-      ].join('\n'),
-    );
-    expect(init).not.toContain('StrCpy $lobsterUiMode "interactive"');
     expect(init).toContain('launcher_fallback=$lobsterLauncherFallback');
 
     const phaseWrites = installerInclude
@@ -515,27 +455,11 @@ describe('Windows installer hardening contracts', () => {
     expect(installerInclude).not.toContain('Previous files (if staged):');
   });
 
-  test('defers old-app relaunch until the terminal page closes and requires inventory trust', () => {
+  test('relaunches a verified old app only for interactive update intent', () => {
     const start = installerInclude.indexOf('Function lobsterTryRelaunchOldApp');
     const end = installerInclude.indexOf('FunctionEnd', start);
     const relaunch = installerInclude.slice(start, end);
-    const rollbackStart = installerInclude.indexOf(
-      'Function lobsterRollbackOldInstall',
-    );
-    const rollbackEnd = installerInclude.indexOf('FunctionEnd', rollbackStart);
-    const rollback = installerInclude.slice(rollbackStart, rollbackEnd);
-    const completeStart = installerInclude.indexOf(
-      'Function lobsterCompleteTerminalResult',
-    );
-    const completeEnd = installerInclude.indexOf('FunctionEnd', completeStart);
-    const complete = installerInclude.slice(completeStart, completeEnd);
-    const initStart = installerInclude.indexOf('!macro customInit');
-    const initEnd = installerInclude.indexOf('!macroend', initStart);
-    const init = installerInclude.slice(initStart, initEnd);
 
-    expect(relaunch).toContain(
-      'StrCmp $lobsterOldAppExecutionTrust "trusted-inventory-hash" 0 LobsterOldAppRelaunchLog',
-    );
     expect(relaunch).toContain('${StdUtils.TestParameter} $0 "updated"');
     expect(relaunch).toContain('${StdUtils.TestParameter} $0 "force-run"');
     expect(relaunch).toContain('IfSilent 0 LobsterOldAppRelaunchInteractive');
@@ -552,82 +476,9 @@ describe('Windows installer hardening contracts', () => {
     );
     expect(relaunch).toContain('StrCmp $0 "0" LobsterOldAppRelaunchSucceeded');
     expect(relaunch).toContain('"old-app-relaunch-failed"');
-    expect(init).toContain(
-      'StrCpy $lobsterOldAppExecutionTrust "not-evaluated-p0.5"',
+    expect(installerInclude).toContain(
+      'StrCmp $lobsterOldInstallRollbackStatus "success" 0 LobsterRollbackDone',
     );
-    expect(rollback).not.toContain('Call lobsterTryRelaunchOldApp');
-    expect(complete).toContain(
-      'StrCmp $lobsterInstallerTerminalOutcome "recovery-required" LobsterTerminalCompleteNoRelaunch',
-    );
-    expect(complete).toContain(
-      'StrCmp $lobsterInstallerTerminalPageState "visible" LobsterTerminalCompleteStart',
-    );
-    expect(complete).not.toContain(
-      'StrCmp $lobsterInstallerTerminalPageState "ready" LobsterTerminalCompleteStart',
-    );
-    expect(complete).toContain('Call lobsterTryRelaunchOldApp');
-    expect(complete.indexOf('Call lobsterTryRelaunchOldApp')).toBeLessThan(
-      complete.indexOf(
-        'StrCpy $lobsterInstallerTerminalPageState "closed"',
-      ),
-    );
-    expect(
-      installerInclude.match(/^\s*Call lobsterTryRelaunchOldApp$/gm),
-    ).toHaveLength(1);
-  });
-
-  test('uses an installer-native terminal page for assisted guard failures', () => {
-    const finishStart = installerInclude.indexOf('!macro customFinishPage');
-    const finishEnd = installerInclude.indexOf('!macroend', finishStart);
-    const finish = installerInclude.slice(finishStart, finishEnd);
-    const abortStart = installerInclude.indexOf(
-      'Function lobsterAbortOldTreeExecution',
-    );
-    const abortEnd = installerInclude.indexOf('FunctionEnd', abortStart);
-    const abort = installerInclude.slice(abortStart, abortEnd);
-    const wrapperStart = installerInclude.indexOf('!macro customUninstallOldVersion');
-    const wrapperEnd = installerInclude.indexOf('!macroend', wrapperStart);
-    const wrapper = installerInclude.slice(wrapperStart, wrapperEnd);
-
-    expect(electronBuilderConfig.nsis?.oneClick).toBe(false);
-    expect(finish).toContain('Function lobsterTerminalFinishPre');
-    expect(finish).toContain('IfSilent LobsterTerminalFinishSkip 0');
-    expect(finish).toContain(
-      'StrCmp $lobsterInstallerTerminalFailureKind "" LobsterTerminalFinishSkip',
-    );
-    expect(finish).toContain('!define MUI_FINISHPAGE_LINK');
-    expect(finish).toContain('Function lobsterTerminalFinishLeave');
-    expect(finish).toContain('Call lobsterCompleteTerminalResult');
-    expect(finish).toContain('Function lobsterSuccessFinishPre');
-    expect(finish).toContain('${If} ${isUpdated}');
-    expect(finish).toContain('Goto LobsterSuccessFinishSkip');
-    expect(abort).toContain(
-      'StrCpy $lobsterInstallerTerminalPageState "ready"',
-    );
-    expect(abort).not.toMatch(/^\s*MessageBox\b/m);
-    expect(abort).not.toMatch(/^\s+Quit$/m);
-    expect(wrapper).toMatch(
-      /Call lobsterAbortOldTreeExecution[\s\S]*?;\s*Return ends the install Section[\s\S]*?^\s+Return$/m,
-    );
-    expect(installerInclude).not.toContain('Banner::show');
-
-    const failedStart = installerInclude.indexOf('!macro customInstallerFailed');
-    const failedEnd = installerInclude.indexOf('!macroend', failedStart);
-    const failed = installerInclude.slice(failedStart, failedEnd);
-    const quitStart = installerInclude.indexOf(
-      '!macro customBeforeInstallerQuit',
-    );
-    const quitEnd = installerInclude.indexOf('!macroend', quitStart);
-    const quit = installerInclude.slice(quitStart, quitEnd);
-    const userAbortStart = installerInclude.indexOf(
-      '!macro customInstallerUserAbort',
-    );
-    const userAbortEnd = installerInclude.indexOf('!macroend', userAbortStart);
-    const userAbort = installerInclude.slice(userAbortStart, userAbortEnd);
-
-    expect(failed).toContain('Call lobsterApplyTerminalExitCode');
-    expect(quit).toContain('Call lobsterApplyTerminalExitCode');
-    expect(userAbort).toContain('Call lobsterApplyTerminalExitCode');
   });
 
   test('preserves userData on uninstall by default', () => {
@@ -639,9 +490,7 @@ describe('Windows installer hardening contracts', () => {
     expect(appBuilderPatch).toContain('templates/nsis/installer.nsi');
     expect(appBuilderPatch).toContain('templates/nsis/include/extractAppPackage.nsh');
     expect(appBuilderPatch).toContain('templates/nsis/include/installer.nsh');
-    expect(appBuilderPatch).toContain('templates/nsis/include/installUtil.nsh');
     expect(appBuilderPatch).toContain('templates/nsis/include/webPackage.nsh');
-    expect(appBuilderPatch).toContain('!ifmacrodef customUninstallOldVersion');
     expect(appBuilderPatch).toContain('customAfterUninstallOldVersions');
     expect(appBuilderPatch).toContain('customBeforeRegistryAddInstallInfo');
     expect(appBuilderPatch).toContain('customAppPackageExtractStart');

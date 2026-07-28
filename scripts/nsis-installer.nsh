@@ -1,20 +1,5 @@
 !include "FileFunc.nsh"
 
-!define LOBSTER_INSTALL_EXIT_DESTRUCTIVE_FALLBACK_BLOCKED 4
-!define LOBSTER_INSTALL_UI_MODE_WIZARD "wizard"
-!define LOBSTER_INSTALL_UI_MODE_PROGRESS_VISIBLE "progress-visible"
-!define LOBSTER_INSTALL_UI_MODE_SILENT "silent"
-!define LOBSTER_INSTALL_BLOCKED_TITLE_EN "LobsterAI was not updated"
-!define LOBSTER_INSTALL_BLOCKED_TITLE_ZH "LobsterAI ${U+66F4}${U+65B0}${U+5DF2}${U+505C}${U+6B62}"
-!define LOBSTER_INSTALL_RECOVERY_TITLE_EN "Manual recovery is required"
-!define LOBSTER_INSTALL_RECOVERY_TITLE_ZH "${U+9700}${U+8981}${U+624B}${U+52A8}${U+6062}${U+590D}"
-!define LOBSTER_INSTALL_OPEN_PRESERVED_EN "Open the preserved installation folder"
-!define LOBSTER_INSTALL_OPEN_PRESERVED_ZH "${U+6253}${U+5F00}${U+4FDD}${U+7559}${U+7684}${U+5B89}${U+88C5}${U+76EE}${U+5F55}"
-!define LOBSTER_INSTALL_OLD_TREE_BLOCKED_EN "Setup stopped before running code from the previous installation because this folder could not be proven safe to replace. The previous installation was preserved. Move personal files out of the installation folder, then retry. Details:"
-!define LOBSTER_INSTALL_OLD_TREE_BLOCKED_ZH "${U+4E3A}${U+907F}${U+514D}${U+5220}${U+9664}${U+4F60}${U+7684}${U+6587}${U+4EF6}${U+FF0C}${U+5B89}${U+88C5}${U+7A0B}${U+5E8F}${U+5DF2}${U+5728}${U+8FD0}${U+884C}${U+65E7}${U+7248}${U+5378}${U+8F7D}${U+5668}${U+524D}${U+505C}${U+6B62}${U+3002}${U+5F53}${U+524D}${U+5B89}${U+88C5}${U+76EE}${U+5F55}${U+65E0}${U+6CD5}${U+88AB}${U+8BC1}${U+660E}${U+53EF}${U+5B89}${U+5168}${U+66FF}${U+6362}${U+FF1B}${U+65E7}${U+7248}${U+672C}${U+5DF2}${U+4FDD}${U+7559}${U+3002}${U+8BF7}${U+5148}${U+5C06}${U+4E2A}${U+4EBA}${U+6587}${U+4EF6}${U+79FB}${U+51FA}${U+5B89}${U+88C5}${U+76EE}${U+5F55}${U+FF0C}${U+7136}${U+540E}${U+91CD}${U+8BD5}${U+3002}${U+8BE6}${U+7EC6}${U+4FE1}${U+606F}${U+FF1A}"
-!define LOBSTER_INSTALL_RECOVERY_REQUIRED_EN "The installation folder is in an uncertain recovery state. Setup did not delete any recovery copy and did not continue. Restart Windows before retrying, and preserve every folder listed in the log. Details:"
-!define LOBSTER_INSTALL_RECOVERY_REQUIRED_ZH "${U+5B89}${U+88C5}${U+76EE}${U+5F55}${U+7684}${U+6062}${U+590D}${U+72B6}${U+6001}${U+4E0D}${U+660E}${U+786E}${U+3002}${U+5B89}${U+88C5}${U+7A0B}${U+5E8F}${U+6CA1}${U+6709}${U+5220}${U+9664}${U+4EFB}${U+4F55}${U+6062}${U+590D}${U+526F}${U+672C}${U+FF0C}${U+4E5F}${U+6CA1}${U+6709}${U+7EE7}${U+7EED}${U+5B89}${U+88C5}${U+3002}${U+8BF7}${U+91CD}${U+65B0}${U+542F}${U+52A8}${U+0020}${U+0057}${U+0069}${U+006E}${U+0064}${U+006F}${U+0077}${U+0073}${U+0020}${U+540E}${U+518D}${U+8BD5}${U+FF0C}${U+5E76}${U+4FDD}${U+7559}${U+65E5}${U+5FD7}${U+4E2D}${U+5217}${U+51FA}${U+7684}${U+6240}${U+6709}${U+76EE}${U+5F55}${U+3002}${U+8BE6}${U+7EC6}${U+4FE1}${U+606F}${U+FF1A}"
-
 Var lobsterCurrentProcessPid
 Var lobsterInstallerAttemptId
 Var lobsterTargetProcessesStopStatus
@@ -39,7 +24,6 @@ Var lobsterTrustedPowerShellSource
   Var lobsterLegacySkillsRestoreStatus
   Var lobsterOldAppRelaunchStatus
   Var lobsterOldAppRelaunchError
-  Var lobsterOldAppExecutionTrust
   Var lobsterOldAppExecutablePath
   Var lobsterOldUninstallerPath
   Var lobsterOldAppAsarPath
@@ -64,16 +48,8 @@ Var lobsterTrustedPowerShellSource
   Var lobsterOldInstallCurrentDirectory
   Var lobsterOldUninstallCandidatePath
   Var lobsterOldUninstallCandidatePathNormalized
+  Var lobsterOldUninstallStartTick
   Var lobsterOldUninstallLaunchStatus
-  Var lobsterOldUninstallBlockedRoot
-  Var lobsterInstallerTerminalFailureKind
-  Var lobsterInstallerTerminalOutcome
-  Var lobsterInstallerTerminalExitCode
-  Var lobsterInstallerTerminalPageState
-  Var lobsterInstallerTerminalTitle
-  Var lobsterInstallerTerminalText
-  Var lobsterInstallerTerminalLinkText
-  Var lobsterInstallerTerminalOpenPath
   Var lobsterNewInstallValidationStatus
   Var lobsterNewInstallValidationReason
   !ifndef APP_PACKAGE_URL
@@ -331,17 +307,8 @@ FunctionEnd
   !insertmacro EnsureInstallerAttemptId
   StrCpy $lobsterInvocationSource "unknown"
   StrCpy $lobsterUpdatedFlag "absent"
-  StrCpy $lobsterUiMode "${LOBSTER_INSTALL_UI_MODE_WIZARD}"
+  StrCpy $lobsterUiMode "interactive"
   StrCpy $lobsterLauncherFallback "unknown"
-  StrCpy $lobsterInstallerTerminalFailureKind ""
-  StrCpy $lobsterInstallerTerminalOutcome ""
-  StrCpy $lobsterInstallerTerminalExitCode "0"
-  StrCpy $lobsterInstallerTerminalPageState "not-required"
-  StrCpy $lobsterInstallerTerminalTitle ""
-  StrCpy $lobsterInstallerTerminalText ""
-  StrCpy $lobsterInstallerTerminalLinkText ""
-  StrCpy $lobsterInstallerTerminalOpenPath ""
-  StrCpy $lobsterOldAppExecutionTrust "not-evaluated-p0.5"
   ${If} ${isUpdated}
     StrCpy $lobsterUpdatedFlag "present"
   ${EndIf}
@@ -351,9 +318,7 @@ FunctionEnd
     StrCpy $lobsterLauncherFallback "none"
   ${EndIf}
   ${If} ${Silent}
-    StrCpy $lobsterUiMode "${LOBSTER_INSTALL_UI_MODE_SILENT}"
-  ${ElseIf} ${isUpdated}
-    StrCpy $lobsterUiMode "${LOBSTER_INSTALL_UI_MODE_PROGRESS_VISIBLE}"
+    StrCpy $lobsterUiMode "silent"
   ${EndIf}
   CreateDirectory "$APPDATA\LobsterAI"
   FileOpen $9 "$APPDATA\LobsterAI\install-timing.log" a
@@ -362,65 +327,6 @@ FunctionEnd
   FileWrite $9 "$8 phase=custom-init-start attempt_id=$lobsterInstallerAttemptId installer_version=${VERSION} invocation_source=$lobsterInvocationSource updated_flag=$lobsterUpdatedFlag ui_mode=$lobsterUiMode launcher_fallback=$lobsterLauncherFallback instdir=$INSTDIR appdata=$APPDATA$\r$\n"
   FileClose $9
 !macroend
-
-!ifndef BUILD_UNINSTALLER
-  ; electron-builder's assisted installer expands customFinishPage after the
-  ; install-files page. The first MUI finish page is a terminal guard result
-  ; and skips itself for success or /S. The second preserves the stock success
-  ; finish page for ordinary interactive installs and skips itself for
-  ; --updated or any terminal failure.
-  !macro customFinishPage
-    Function lobsterTerminalFinishPre
-      IfSilent LobsterTerminalFinishSkip 0
-      StrCmp $lobsterInstallerTerminalFailureKind "" LobsterTerminalFinishSkip
-        StrCpy $lobsterInstallerTerminalPageState "visible"
-        Return
-      LobsterTerminalFinishSkip:
-        Abort
-    FunctionEnd
-
-    Function lobsterTerminalFinishLeave
-      Call lobsterCompleteTerminalResult
-    FunctionEnd
-
-    !define MUI_PAGE_CUSTOMFUNCTION_PRE lobsterTerminalFinishPre
-    !define MUI_PAGE_CUSTOMFUNCTION_LEAVE lobsterTerminalFinishLeave
-    !define MUI_FINISHPAGE_TITLE "$lobsterInstallerTerminalTitle"
-    !define MUI_FINISHPAGE_TITLE_3LINES
-    !define MUI_FINISHPAGE_TEXT "$lobsterInstallerTerminalText"
-    !define MUI_FINISHPAGE_TEXT_LARGE
-    !define MUI_FINISHPAGE_LINK "$lobsterInstallerTerminalLinkText"
-    !define MUI_FINISHPAGE_LINK_LOCATION "$lobsterInstallerTerminalOpenPath"
-    !define MUI_FINISHPAGE_NOREBOOTSUPPORT
-    !insertmacro MUI_PAGE_FINISH
-
-    Function lobsterSuccessFinishPre
-      StrCmp $lobsterInstallerTerminalFailureKind "" 0 LobsterSuccessFinishSkip
-      ${If} ${isUpdated}
-        Goto LobsterSuccessFinishSkip
-      ${EndIf}
-      Return
-      LobsterSuccessFinishSkip:
-        Abort
-    FunctionEnd
-
-    Function lobsterFinishStartApp
-      ${If} ${isUpdated}
-        StrCpy $1 "--updated"
-      ${Else}
-        StrCpy $1 ""
-      ${EndIf}
-      ${StdUtils.ExecShellAsUser} $0 "$launchLink" "open" "$1"
-    FunctionEnd
-
-    !define MUI_PAGE_CUSTOMFUNCTION_PRE lobsterSuccessFinishPre
-    !ifndef HIDE_RUN_AFTER_FINISH
-      !define MUI_FINISHPAGE_RUN
-      !define MUI_FINISHPAGE_RUN_FUNCTION "lobsterFinishStartApp"
-    !endif
-    !insertmacro MUI_PAGE_FINISH
-  !macroend
-!endif
 
 !ifndef BUILD_UNINSTALLER
   ; P0 preflight deliberately has only two outcomes. Any registration or
@@ -489,11 +395,10 @@ FunctionEnd
     Pop $0
   !macroend
 
-  ; Relaunch is deliberately conservative. P0.5 may only execute a restored
-  ; old application after the content guard has independently established an
-  ; exact inventory-hash execution trust result. Registry paths, CLI flags and
-  ; file existence are discovery/intent signals only. The restored app is
-  ; launched with no --updated argument.
+  ; Relaunch is deliberately conservative. Only the normal interactive
+  ; app-update invocation (--updated + --force-run), after a confirmed process
+  ; stop and with an unchanged/restored regular old executable, is eligible.
+  ; The restored app is launched with no --updated argument.
   !macro DefineLobsterOldAppRelaunchFunction
   Function lobsterTryRelaunchOldApp
     Push $0
@@ -503,8 +408,6 @@ FunctionEnd
 
     StrCmp $lobsterOldAppRelaunchStatus "not-attempted" 0 LobsterOldAppRelaunchDone
     StrCpy $lobsterOldAppRelaunchStatus "blocked"
-    StrCpy $lobsterOldAppRelaunchError "execution-trust-not-established"
-    StrCmp $lobsterOldAppExecutionTrust "trusted-inventory-hash" 0 LobsterOldAppRelaunchLog
     StrCpy $lobsterOldAppRelaunchError "intent-not-trusted"
 
     ; Read the generated command-line flags at relaunch time. This function is
@@ -643,15 +546,17 @@ FunctionEnd
       System::Call 'Kernel32::SetEnvironmentVariable(t "LOBSTERAI_DEFENDER_TARGET", t "")i'
       LobsterRollbackDefenderCleanupDone:
 
-      ; P0.5 intentionally preserves the displaced partial tree after a
-      ; verified restore. Path-only asynchronous cleanup cannot prove that the
-      ; object still has the identity observed by this attempt.
+      ; The displaced tree is never needed after a verified restore. Pass its
+      ; exact path through the child environment instead of interpolating it
+      ; into cmd/PowerShell code: custom install directories may contain shell
+      ; metacharacters. Exec is deliberately non-blocking.
       StrCmp $2 "true" 0 LobsterRollbackLog
-      FileOpen $9 "$APPDATA\LobsterAI\install-timing.log" a
-      FileSeek $9 0 END
-      !insertmacro GetTimestamp $8
-      FileWrite $9 "$8 phase=rollback-failed-tree-preserved attempt_id=$lobsterInstallerAttemptId path=$lobsterOldInstallFailedPath cleanup_mode=disabled-p0.5$\r$\n"
-      FileClose $9
+      System::Call 'Kernel32::SetEnvironmentVariable(t "LOBSTERAI_FAILED_CLEANUP_PATH", t "$lobsterOldInstallFailedPath")i'
+      ClearErrors
+      StrCmp $lobsterTrustedPowerShellPath "" LobsterRollbackFailedTreeCleanupDone
+      Exec '"$lobsterTrustedPowerShellPath" -NoProfile -NonInteractive -WindowStyle Hidden -Command "Remove-Item -LiteralPath $$env:LOBSTERAI_FAILED_CLEANUP_PATH -Recurse -Force -ErrorAction SilentlyContinue"'
+      LobsterRollbackFailedTreeCleanupDone:
+      System::Call 'Kernel32::SetEnvironmentVariable(t "LOBSTERAI_FAILED_CLEANUP_PATH", t "")i'
       Goto LobsterRollbackLog
 
     LobsterRollbackRestoreFailed:
@@ -684,9 +589,8 @@ FunctionEnd
     !insertmacro GetTimestamp $8
     FileWrite $9 "$8 phase=old-install-rollback-complete attempt_id=$lobsterInstallerAttemptId status=$lobsterOldInstallRollbackStatus reason=$lobsterOldInstallRollbackReason error=$lobsterOldInstallRollbackError elapsed_ms=$5 source_exists=$2 backup_exists=$3 displaced=$lobsterOldInstallFailedPath$\r$\n"
     FileClose $9
-    ; Relaunch, when independently trusted, belongs to the terminal UI owner.
-    ; Rollback must finish and the result must be visible before any old-tree
-    ; executable can be dispatched.
+    StrCmp $lobsterOldInstallRollbackStatus "success" 0 LobsterRollbackDone
+    Call lobsterTryRelaunchOldApp
 
     LobsterRollbackDone:
     Pop $9
@@ -707,31 +611,15 @@ FunctionEnd
   !macroend
 
   !macro customBeforeInstallerQuit REASON
-    ${If} $lobsterInstallerTerminalFailureKind == ""
-      !insertmacro customRollbackOldInstall "${REASON}"
-    ${Else}
-      ; A prepared terminal result already owns rollback/recovery. Template
-      ; Quit sites may only preserve its stable typed exit code.
-      Call lobsterApplyTerminalExitCode
-    ${EndIf}
+    !insertmacro customRollbackOldInstall "${REASON}"
   !macroend
 
   !macro customInstallerFailed
-    ${If} $lobsterInstallerTerminalFailureKind == ""
-      !insertmacro customRollbackOldInstall "installer-failed"
-    ${Else}
-      Call lobsterApplyTerminalExitCode
-    ${EndIf}
+    !insertmacro customRollbackOldInstall "installer-failed"
   !macroend
 
   !macro customInstallerUserAbort
-    StrCmp $lobsterInstallerTerminalFailureKind "" LobsterInstallerUserAbortRollback
-      Call lobsterCompleteTerminalResult
-      Call lobsterApplyTerminalExitCode
-      Goto LobsterInstallerUserAbortDone
-    LobsterInstallerUserAbortRollback:
     !insertmacro customRollbackOldInstall "user-abort"
-    LobsterInstallerUserAbortDone:
   !macroend
 !endif
 
@@ -740,6 +628,24 @@ FunctionEnd
 ;    before uninstallOldVersion and file extraction
 ;  - uninstaller: un.install section (assisted) or un.onInit (silent /S)
 !macro customCheckAppRunning
+  !ifndef BUILD_UNINSTALLER
+    ; Silent installs (/S -- e.g. enterprise IT deployments; in-app updates
+    ; use --updated mode with a visible progress page instead) have no
+    ; installer UI at all, so without this the machine looks idle for minutes
+    ; mid-replace. Banner is a plugin-owned window, so it shows even in
+    ; silent mode. The window dies with the installer process, so no failure
+    ; path can leave it behind.
+    ;
+    ; The text is "Updating LobsterAI, please wait..." in Chinese, written as
+    ; ${U+xxxx} escapes because this file must stay pure ASCII: the darwin
+    ; makensis builds used for local syntax checks reject any non-ASCII byte
+    ; (the escapes are fine on the Windows build machine -- the webPackage
+    ; patch ships them in production already).
+    ${If} ${Silent}
+      Banner::show /NOUNLOAD "${U+6B63}${U+5728}${U+66F4}${U+65B0} LobsterAI${U+FF0C}${U+8BF7}${U+7A0D}${U+5019}${U+2026}"
+    ${EndIf}
+  !endif
+
   !ifndef BUILD_UNINSTALLER
     !insertmacro EnsureInstallerAttemptId
     StrCpy $lobsterOldInstallOriginalPath "$INSTDIR"
@@ -1012,6 +918,7 @@ FunctionEnd
       !insertmacro GetTimestamp $8
       FileWrite $9 "$8 phase=skill-backup-failed-abort attempt_id=$lobsterInstallerAttemptId status=$lobsterLegacySkillsStatus exit=$R2 action=old-install-preserved$\r$\n"
       FileClose $9
+      Call lobsterTryRelaunchOldApp
       ${If} ${Silent}
         Banner::destroy
       ${EndIf}
@@ -1158,9 +1065,9 @@ FunctionEnd
       Quit
 
     OldInstallRenameVerificationRestored:
-      ; lobsterRollbackOldInstall has restored the previous tree, but P0.5
-      ; deliberately does not execute it. This attempt must end here instead of
-      ; invoking the stock uninstaller against that restored tree.
+      ; lobsterRollbackOldInstall has already restored and, when its strict
+      ; gates allow it, relaunched the old application. This attempt must end
+      ; here instead of invoking the stock uninstaller against that live tree.
       FileOpen $9 "$APPDATA\LobsterAI\install-timing.log" a
       FileSeek $9 0 END
       !insertmacro GetTimestamp $8
@@ -1188,12 +1095,13 @@ FunctionEnd
     FileOpen $9 "$APPDATA\LobsterAI\install-timing.log" a
     FileSeek $9 0 END
     !insertmacro GetTimestamp $8
-    FileWrite $9 "$8 phase=old-install-rename-complete attempt_id=$lobsterInstallerAttemptId status=$lobsterOldInstallRenameStatus reason=$lobsterOldInstallRenameReason attempts=$lobsterOldInstallRenameAttempts win32_error=$lobsterOldInstallRenameError elapsed_ms=$5 source_exists=$2 backup_exists=$3 backup_path=$lobsterOldInstallBackupPath cleanup_mode=preserve-only-p0.5$\r$\n"
+    FileWrite $9 "$8 phase=old-install-rename-complete attempt_id=$lobsterInstallerAttemptId status=$lobsterOldInstallRenameStatus reason=$lobsterOldInstallRenameReason attempts=$lobsterOldInstallRenameAttempts win32_error=$lobsterOldInstallRenameError elapsed_ms=$5 source_exists=$2 backup_exists=$3 backup_path=$lobsterOldInstallBackupPath cleanup_mode=deferred$\r$\n"
     FileClose $9
 
-    ; The install-scope Defender exclusion is added by
-    ; customAfterUninstallOldVersions only after every registry-root candidate
-    ; has passed the P0.5 no-execution gate.
+    ; The install-scope Defender exclusion is intentionally added by
+    ; customAfterUninstallOldVersions, after every legacy uninstaller has
+    ; returned. Older uninstallers remove these exclusions during --updated;
+    ; adding here would let them undo the protection before payload extraction.
     Goto CustomCheckInstallerDone
 
     CustomCheckFreshInstall:
@@ -1219,119 +1127,11 @@ FunctionEnd
 !macroend
 
 !ifndef BUILD_UNINSTALLER
-  Function lobsterAbortOldTreeExecution
-    ; Prepare a terminal result without using MessageBox, Abort or Quit. The
-    ; install Section returns immediately after this function, which skips all
-    ; payload/registry mutation and lets the assisted wizard advance to its
-    ; installer-native result page. Silent mode skips that page and preserves
-    ; the stable non-zero exit code.
-    Push $0
-    Push $1
-    Push $8
-    Push $9
-
-    StrCpy $lobsterInstallerTerminalFailureKind "install-root-destructive-fallback-blocked"
-    StrCpy $lobsterInstallerTerminalOutcome "failed-before-mutation"
-    StrCpy $lobsterInstallerTerminalExitCode "${LOBSTER_INSTALL_EXIT_DESTRUCTIVE_FALLBACK_BLOCKED}"
-    StrCpy $lobsterInstallerTerminalPageState "ready"
-    StrCpy $lobsterInstallerTerminalOpenPath "$lobsterOldInstallOriginalPath"
-    StrCpy $1 "false"
-    StrCmp $lobsterOldInstallRenameStatus "success" 0 LobsterOldTreeExecutionNoRollback
-      StrCpy $1 "true"
-      StrCpy $lobsterOldInstallRollbackReason "old-tree-execution-prohibited"
-      Call lobsterRollbackOldInstall
-      StrCmp $lobsterOldInstallRollbackStatus "failed" LobsterOldTreeExecutionRecoveryRequired
-      StrCpy $lobsterInstallerTerminalOutcome "rollback-succeeded"
-
-    LobsterOldTreeExecutionNoRollback:
-      Goto LobsterOldTreeExecutionChooseLanguage
-
-    LobsterOldTreeExecutionRecoveryRequired:
-      StrCpy $lobsterInstallerTerminalOutcome "recovery-required"
-      StrCpy $lobsterInstallerTerminalExitCode "3"
-      StrCmp $lobsterOldInstallBackupPath "" LobsterOldTreeExecutionChooseLanguage
-        StrCpy $lobsterInstallerTerminalOpenPath "$lobsterOldInstallBackupPath"
-
-    LobsterOldTreeExecutionChooseLanguage:
-    ; 2052 is the Windows LCID for Simplified Chinese. This function is parsed
-    ; before electron-builder includes LogicLib and its language constants.
-    StrCmp $LANGUAGE 2052 LobsterOldTreeExecutionChinese
-      StrCmp $lobsterInstallerTerminalOutcome "recovery-required" LobsterOldTreeExecutionRecoveryEnglish
-        StrCpy $lobsterInstallerTerminalTitle "${LOBSTER_INSTALL_BLOCKED_TITLE_EN}"
-        StrCpy $lobsterInstallerTerminalText "${LOBSTER_INSTALL_OLD_TREE_BLOCKED_EN}$\r$\n$lobsterInstallerTerminalOpenPath"
-        StrCpy $lobsterInstallerTerminalLinkText "${LOBSTER_INSTALL_OPEN_PRESERVED_EN}"
-        Goto LobsterOldTreeExecutionLog
-      LobsterOldTreeExecutionRecoveryEnglish:
-        StrCpy $lobsterInstallerTerminalTitle "${LOBSTER_INSTALL_RECOVERY_TITLE_EN}"
-        StrCpy $lobsterInstallerTerminalText "${LOBSTER_INSTALL_RECOVERY_REQUIRED_EN}$\r$\n$lobsterInstallerTerminalOpenPath"
-        StrCpy $lobsterInstallerTerminalLinkText "${LOBSTER_INSTALL_OPEN_PRESERVED_EN}"
-        Goto LobsterOldTreeExecutionLog
-
-    LobsterOldTreeExecutionChinese:
-      StrCmp $lobsterInstallerTerminalOutcome "recovery-required" LobsterOldTreeExecutionRecoveryChinese
-        StrCpy $lobsterInstallerTerminalTitle "${LOBSTER_INSTALL_BLOCKED_TITLE_ZH}"
-        StrCpy $lobsterInstallerTerminalText "${LOBSTER_INSTALL_OLD_TREE_BLOCKED_ZH}$\r$\n$lobsterInstallerTerminalOpenPath"
-        StrCpy $lobsterInstallerTerminalLinkText "${LOBSTER_INSTALL_OPEN_PRESERVED_ZH}"
-        Goto LobsterOldTreeExecutionLog
-      LobsterOldTreeExecutionRecoveryChinese:
-        StrCpy $lobsterInstallerTerminalTitle "${LOBSTER_INSTALL_RECOVERY_TITLE_ZH}"
-        StrCpy $lobsterInstallerTerminalText "${LOBSTER_INSTALL_RECOVERY_REQUIRED_ZH}$\r$\n$lobsterInstallerTerminalOpenPath"
-        StrCpy $lobsterInstallerTerminalLinkText "${LOBSTER_INSTALL_OPEN_PRESERVED_ZH}"
-
-    LobsterOldTreeExecutionLog:
-    FileOpen $9 "$APPDATA\LobsterAI\install-timing.log" a
-    FileSeek $9 0 END
-    !insertmacro GetTimestamp $8
-    FileWrite $9 "$8 phase=install-terminal-result-prepared attempt_id=$lobsterInstallerAttemptId outcome=$lobsterInstallerTerminalOutcome failure_kind=$lobsterInstallerTerminalFailureKind ui_mode=$lobsterUiMode mutation_started=$1 old_tree_execution=disabled-p0.5 rollback_status=$lobsterOldInstallRollbackStatus relaunch_status=$lobsterOldAppRelaunchStatus root=$lobsterOldUninstallBlockedRoot candidate=$lobsterOldUninstallCandidatePath open_path=$lobsterInstallerTerminalOpenPath$\r$\n"
-    FileClose $9
-    Call lobsterApplyTerminalExitCode
-
-    Pop $9
-    Pop $8
-    Pop $1
-    Pop $0
-  FunctionEnd
-
-  Function lobsterApplyTerminalExitCode
-    StrCmp $lobsterInstallerTerminalExitCode "3" LobsterTerminalExitRecovery
-    StrCmp $lobsterInstallerTerminalExitCode "${LOBSTER_INSTALL_EXIT_DESTRUCTIVE_FALLBACK_BLOCKED}" LobsterTerminalExitBlocked
-      SetErrorLevel 1
-      Return
-    LobsterTerminalExitRecovery:
-      SetErrorLevel 3
-      Return
-    LobsterTerminalExitBlocked:
-      SetErrorLevel ${LOBSTER_INSTALL_EXIT_DESTRUCTIVE_FALLBACK_BLOCKED}
-  FunctionEnd
-
-  Function lobsterCompleteTerminalResult
-    StrCmp $lobsterInstallerTerminalPageState "visible" LobsterTerminalCompleteStart
-      Goto LobsterTerminalCompleteDone
-
-    LobsterTerminalCompleteStart:
-      StrCpy $lobsterInstallerTerminalPageState "closing"
-      ; recovery-required never executes either the restored or staged tree.
-      StrCmp $lobsterInstallerTerminalOutcome "recovery-required" LobsterTerminalCompleteNoRelaunch
-        Call lobsterTryRelaunchOldApp
-      LobsterTerminalCompleteNoRelaunch:
-      StrCpy $lobsterInstallerTerminalPageState "closed"
-      FileOpen $9 "$APPDATA\LobsterAI\install-timing.log" a
-      FileSeek $9 0 END
-      !insertmacro GetTimestamp $8
-      FileWrite $9 "$8 phase=install-terminal-result-complete attempt_id=$lobsterInstallerAttemptId outcome=$lobsterInstallerTerminalOutcome failure_kind=$lobsterInstallerTerminalFailureKind page_state=$lobsterInstallerTerminalPageState execution_trust=$lobsterOldAppExecutionTrust relaunch_status=$lobsterOldAppRelaunchStatus$\r$\n"
-      FileClose $9
-      Call lobsterApplyTerminalExitCode
-
-    LobsterTerminalCompleteDone:
-  FunctionEnd
-
-  ; electron-builder delegates each registry root to this wrapper. P0.5 only
-  ; continues when the root has no candidate in a genuinely fresh install, or
-  ; when the selected old root was already staged by the verified fast path.
-  ; Every other possible-existing case fails closed; stock uninstallOldVersion
-  ; and its copy-out/in-place execution paths remain unreachable.
+  ; electron-builder delegates each registry root to this wrapper. A successful
+  ; fast-path rename is matched against that root's InstallLocation explicitly;
+  ; only the matching legacy uninstaller is skipped. Every other case retains
+  ; the stock uninstallOldVersion fallback and its error handling.
   !macro customUninstallOldVersion ROOT_KEY
-    StrCpy $lobsterOldUninstallBlockedRoot "${ROOT_KEY}"
     StrCpy $lobsterOldUninstallCandidatePath ""
     StrCpy $lobsterOldUninstallCandidatePathNormalized ""
     ClearErrors
@@ -1340,56 +1140,79 @@ FunctionEnd
       GetFullPathName $lobsterOldUninstallCandidatePathNormalized "$lobsterOldUninstallCandidatePath"
     CustomOldUninstallCandidateReady_${ROOT_KEY}:
 
-    StrCmp $lobsterInstallScenario "fresh-install" CustomOldUninstallerFresh_${ROOT_KEY}
-    StrCmp $lobsterOldInstallRenameStatus "success" 0 CustomOldUninstallerBlocked_${ROOT_KEY}
-    StrCmp $lobsterOldUninstallCandidatePathNormalized "" CustomOldUninstallerNoCandidateAfterStage_${ROOT_KEY}
-    StrCmp $lobsterOldUninstallCandidatePathNormalized $lobsterOldInstallOriginalPathNormalized CustomOldUninstallerMatchedStage_${ROOT_KEY}
-    Goto CustomOldUninstallerBlocked_${ROOT_KEY}
-
-    CustomOldUninstallerFresh_${ROOT_KEY}:
-      StrCmp $lobsterOldUninstallCandidatePath "" 0 CustomOldUninstallerBlocked_${ROOT_KEY}
-      StrCpy $lobsterOldUninstallLaunchStatus "fresh-no-candidate"
-      Goto CustomOldUninstallerSkipped_${ROOT_KEY}
-
-    CustomOldUninstallerNoCandidateAfterStage_${ROOT_KEY}:
-      StrCpy $lobsterOldUninstallLaunchStatus "no-candidate-after-existing-stage"
-      Goto CustomOldUninstallerSkipped_${ROOT_KEY}
-
-    CustomOldUninstallerMatchedStage_${ROOT_KEY}:
-      StrCpy $lobsterOldUninstallLaunchStatus "matched-existing-stage"
-      Goto CustomOldUninstallerSkipped_${ROOT_KEY}
-
-    CustomOldUninstallerBlocked_${ROOT_KEY}:
-      FileOpen $9 "$APPDATA\LobsterAI\install-timing.log" a
-      FileSeek $9 0 END
-      !insertmacro GetTimestamp $8
-      FileWrite $9 "$8 phase=old-tree-execution-blocked attempt_id=$lobsterInstallerAttemptId root=${ROOT_KEY} reason=destructive-fallback-prohibited scenario=$lobsterInstallScenario registered_instdir=$lobsterOldUninstallCandidatePath rename_status=$lobsterOldInstallRenameStatus old_tree_execution=disabled-p0.5$\r$\n"
-      FileClose $9
-      Call lobsterAbortOldTreeExecution
-      ; Return ends the install Section. Do not use Abort/.onInstFailed or Quit:
-      ; the assisted wizard must advance to the terminal result page, while /S
-      ; exits with the stable code prepared above and never creates a window.
-      Return
-
-    CustomOldUninstallerSkipped_${ROOT_KEY}:
+    ${If} $lobsterOldInstallRenameStatus == "success"
+    ${AndIf} $lobsterOldUninstallCandidatePathNormalized != ""
+    ${AndIf} $lobsterOldUninstallCandidatePathNormalized == $lobsterOldInstallOriginalPathNormalized
       ClearErrors
       StrCpy $R0 0
       FileOpen $9 "$APPDATA\LobsterAI\install-timing.log" a
       FileSeek $9 0 END
       !insertmacro GetTimestamp $8
-      FileWrite $9 "$8 phase=old-uninstaller-skipped attempt_id=$lobsterInstallerAttemptId root=${ROOT_KEY} reason=$lobsterOldUninstallLaunchStatus registered_instdir=$lobsterOldUninstallCandidatePath backup_path=$lobsterOldInstallBackupPath old_tree_execution=disabled-p0.5$\r$\n"
+      FileWrite $9 "$8 phase=old-uninstaller-skipped attempt_id=$lobsterInstallerAttemptId root=${ROOT_KEY} reason=rename-success registered_instdir=$lobsterOldUninstallCandidatePath backup_path=$lobsterOldInstallBackupPath$\r$\n"
       FileClose $9
+    ${Else}
+      System::Call 'kernel32::GetTickCount()i .r4'
+      StrCpy $lobsterOldUninstallStartTick $4
+      FileOpen $9 "$APPDATA\LobsterAI\install-timing.log" a
+      FileSeek $9 0 END
+      !insertmacro GetTimestamp $8
+      FileWrite $9 "$8 phase=old-uninstaller-start attempt_id=$lobsterInstallerAttemptId root=${ROOT_KEY} registered_instdir=$lobsterOldUninstallCandidatePath rename_status=$lobsterOldInstallRenameStatus$\r$\n"
+      FileClose $9
+
+      !insertmacro uninstallOldVersion ${ROOT_KEY}
+      IfErrors CustomOldUninstallerLaunchFailed_${ROOT_KEY}
+      StrCpy $lobsterOldUninstallLaunchStatus "returned"
+      Goto CustomOldUninstallerReturned_${ROOT_KEY}
+
+      CustomOldUninstallerLaunchFailed_${ROOT_KEY}:
+      StrCpy $lobsterOldUninstallLaunchStatus "launch-error"
+
+      CustomOldUninstallerReturned_${ROOT_KEY}:
+      System::Call 'kernel32::GetTickCount()i .r6'
+      IntOp $5 $6 - $lobsterOldUninstallStartTick
+      FileOpen $9 "$APPDATA\LobsterAI\install-timing.log" a
+      FileSeek $9 0 END
+      !insertmacro GetTimestamp $8
+      FileWrite $9 "$8 phase=old-uninstaller-returned attempt_id=$lobsterInstallerAttemptId root=${ROOT_KEY} status=$lobsterOldUninstallLaunchStatus exit=$R0 elapsed_ms=$5$\r$\n"
+      FileClose $9
+
+      ; handleUninstallResult calls Quit for a non-zero legacy uninstaller.
+      ; Roll the fast-path directory swap back before handing it that result.
+      ${If} $R0 != 0
+        !insertmacro customRollbackOldInstall "old-uninstaller-nonzero"
+      ${EndIf}
+
+      ; The diagnostic writes above can change NSIS' error flag. Recreate the
+      ; exact result expected by electron-builder's stock handler.
+      StrCmp $lobsterOldUninstallLaunchStatus "launch-error" CustomOldUninstallerRestoreError_${ROOT_KEY}
+      ClearErrors
+      Goto CustomOldUninstallerHandle_${ROOT_KEY}
+      CustomOldUninstallerRestoreError_${ROOT_KEY}:
+      SetErrors
+      CustomOldUninstallerHandle_${ROOT_KEY}:
+      !insertmacro handleUninstallResult ${ROOT_KEY}
+
+      System::Call 'kernel32::GetTickCount()i .r6'
+      IntOp $5 $6 - $lobsterOldUninstallStartTick
+      FileOpen $9 "$APPDATA\LobsterAI\install-timing.log" a
+      FileSeek $9 0 END
+      !insertmacro GetTimestamp $8
+      FileWrite $9 "$8 phase=old-uninstaller-complete attempt_id=$lobsterInstallerAttemptId root=${ROOT_KEY} status=handled exit=$R0 elapsed_ms=$5$\r$\n"
+      FileClose $9
+    ${EndIf}
   !macroend
 
-  ; Runs after every old-install root passed the no-execution gate, immediately
-  ; before installApplicationFiles.
+  ; Runs after every old-install root has either been skipped or fully
+  ; uninstalled, immediately before installApplicationFiles. This ordering is
+  ; important for transition upgrades: already-installed legacy uninstallers
+  ; remove LobsterAI exclusions at the end of their --updated flow.
   !macro customAfterUninstallOldVersions
     DetailPrint "[Installer] Applying Windows Defender install-scope exclusion"
     !insertmacro ResolveTrustedPowerShell
     FileOpen $9 "$APPDATA\LobsterAI\install-timing.log" a
     FileSeek $9 0 END
     !insertmacro GetTimestamp $8
-    FileWrite $9 "$8 phase=defender-exclusion-start attempt_id=$lobsterInstallerAttemptId point=post-old-tree-execution-gate rename_status=$lobsterOldInstallRenameStatus helper_status=$lobsterTrustedPowerShellStatus$\r$\n"
+    FileWrite $9 "$8 phase=defender-exclusion-start attempt_id=$lobsterInstallerAttemptId point=post-old-uninstaller rename_status=$lobsterOldInstallRenameStatus helper_status=$lobsterTrustedPowerShellStatus$\r$\n"
     FileClose $9
     System::Call 'kernel32::GetTickCount()i .r7'
     StrCmp $lobsterTrustedPowerShellPath "" DefenderPostUninstallHelperMissing
@@ -1436,7 +1259,7 @@ FunctionEnd
     FileOpen $9 "$APPDATA\LobsterAI\install-timing.log" a
     FileSeek $9 0 END
     !insertmacro GetTimestamp $8
-    FileWrite $9 "$8 phase=defender-exclusion-complete attempt_id=$lobsterInstallerAttemptId point=post-old-tree-execution-gate exit=$R2 elapsed_ms=$5 output=$1$\r$\n"
+    FileWrite $9 "$8 phase=defender-exclusion-complete attempt_id=$lobsterInstallerAttemptId point=post-old-uninstaller exit=$R2 elapsed_ms=$5 output=$1$\r$\n"
     FileClose $9
   !macroend
 
@@ -1637,9 +1460,9 @@ FunctionEnd
   ; into a single tar file. NSIS 7z extracts one large file almost instantly;
   ; we then unpack the tar here using Electron's Node runtime.
   ;
-  ; The install-scope Defender exclusion was added after the no-execution gate
-  ; and immediately before the NSIS payload extraction; temporary/legacy
-  ; entries are trimmed at the end of this macro.
+  ; The install-scope Defender exclusion was added after every legacy
+  ; uninstaller returned and immediately before the NSIS payload extraction;
+  ; temporary/legacy entries are trimmed at the end of this macro.
 
   System::Call 'Kernel32::SetEnvironmentVariable(t "ELECTRON_RUN_AS_NODE", t "1")i'
 
@@ -2191,7 +2014,7 @@ FunctionEnd
 ; Standard post-registry electron-builder hook. All fallible extraction,
 ; restoration, Defender rebalancing and validation completed in
 ; customBeforeRegistryAddInstallInfo. This hook only commits the already
-; prevalidated directory swap. P0.5 preserves the exact-current backup.
+; prevalidated directory swap and schedules exact-current-backup cleanup.
 !macro customInstall
   StrCmp $lobsterNewInstallValidationStatus "success" 0 InstallFinalizeInvariantFailed
   StrCmp $lobsterOldInstallRenameStatus "prevalidated" 0 InstallFinalizeNoRename
@@ -2203,14 +2026,29 @@ FunctionEnd
     FileClose $2
   InstallFinalizeNoRename:
 
-  ; A successful rename keeps the old tree intact during extraction. P0.5
-  ; deliberately keeps that backup after commit: an asynchronous path-only
-  ; delete cannot revalidate object identity or an exact app-owned delete set.
+  ; A successful rename keeps the old tree intact during extraction. Only a
+  ; validated commit may schedule deletion, and only for this run's exact
+  ; backup path. Older interrupted backups remain untouched for recovery.
+  ; Pass the path through the environment to avoid shell interpretation of a
+  ; user-selected install directory. Exec is asynchronous, so this phase is
+  ; "scheduled", not complete.
   ${If} $lobsterOldInstallRenameStatus == "committed"
+    StrCpy $0 "success"
+    System::Call 'Kernel32::SetEnvironmentVariable(t "LOBSTERAI_OLD_CLEANUP_PATH", t "$lobsterOldInstallBackupPath")i'
+    ClearErrors
+    StrCmp $lobsterTrustedPowerShellPath "" OldInstallCleanupHelperMissing
+    Exec '"$lobsterTrustedPowerShellPath" -NoProfile -NonInteractive -WindowStyle Hidden -Command "Remove-Item -LiteralPath $$env:LOBSTERAI_OLD_CLEANUP_PATH -Recurse -Force -ErrorAction SilentlyContinue"'
+    IfErrors 0 +2
+      StrCpy $0 "launch-failed"
+    Goto OldInstallCleanupDispatchDone
+    OldInstallCleanupHelperMissing:
+      StrCpy $0 "helper-not-found"
+    OldInstallCleanupDispatchDone:
+    System::Call 'Kernel32::SetEnvironmentVariable(t "LOBSTERAI_OLD_CLEANUP_PATH", t "")i'
     FileOpen $2 "$APPDATA\LobsterAI\install-timing.log" a
     FileSeek $2 0 END
     !insertmacro GetTimestamp $8
-    FileWrite $2 "$8 phase=old-install-backup-preserved attempt_id=$lobsterInstallerAttemptId backup_path=$lobsterOldInstallBackupPath cleanup_mode=disabled-p0.5$\r$\n"
+    FileWrite $2 "$8 phase=old-install-cleanup-scheduled attempt_id=$lobsterInstallerAttemptId dispatch=$0 backup_path=$lobsterOldInstallBackupPath target=exact-current-backup cleanup_mode=async-exec-after-commit$\r$\n"
     FileClose $2
   ${EndIf}
   Goto InstallFinalizeComplete
