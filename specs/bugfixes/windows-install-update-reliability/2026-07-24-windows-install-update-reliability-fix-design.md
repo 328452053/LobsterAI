@@ -2,7 +2,7 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | P0-hotfix 基线位于 `fix/windows-install-update-reliability`；P0.5 安全止损切片与取证基础已在工作树实现、验证中；destructive content guard 与 P1 尚未实现 |
+| 状态 | P0-hotfix 本地实现与构建验证完成，Windows 签名/真机/发布验证待完成；P0.5 与 P1 尚未实现 |
 | 文档 Owner | TBD |
 | P0-hotfix DRI | TBD（单一工程负责人） |
 | 事故版本 | Windows 2026.7.23 |
@@ -35,13 +35,6 @@ manifest、foreign-content 恢复区或原生 helper。上述能力进入 P0.5/P
 因此推迟 P0 的 HTTPS transport 下限门禁。固定 origin 只有在下载域名
 稳定后才可加入；否则应由签名 manifest 解决动态 CDN 的来源鉴真。
 
-P0.5 的最终边界以关联的安装目录内容保护 spec 第 0 节为准：未知/未覆盖
-版本只阻断并给出完整备份指引；不执行旧安装树代码；不自动递归清理
-`.old`/`.failed`；`/S` 零 UI，而无 `/S` 的 `--updated` 保留进度窗口并
-在阻断时显示 installer-native 终态结果页。handle-bound opaque quarantine、
-精确卸载、用户态 launcher result bridge 和跨权限 consent/policy receipt
-均留在 P1。
-
 P0-hotfix 以“一名 DRI、一个工作周、发布一个新版本号”为硬 timebox。
 构建、签名、独立评审和真机验证可以由发布/QA 角色并行协助，但不能移出
 这一周的发布门禁。若工作量超出 timebox，先把增强项移至 P0.5；不得通过
@@ -54,14 +47,6 @@ P0-hotfix 以“一名 DRI、一个工作周、发布一个新版本号”为硬
 `nsis-web` 未签名安装包。由于当前 Windows 下载 CDN origin 尚未稳定，
 P0 不内置固定域名清单；客户端校验输入和最终 URL 的 HTTPS、默认端口、
 凭据、fragment 与 `.exe` 扩展名，并记录动态 transport receipt。
-
-当前工作树还完成了 P0.5 的三个止损/取证切片：旧树执行路径不可达、
-`.old/.failed` 自动清理禁用、assisted terminal result page，以及
-build-evidence-only packaged-tree generator。相关 6 组定向测试共 101 项
-通过；仓库完整 Vitest 为 244 个文件、2,656 项通过、2 项跳过；
-`compile:electron` 通过；目标分支版本的未签名 Windows x64
-electron-builder 交叉构建通过。未签名产物只用于模板/编译合同，不是可
-发布安装包，也不表示 content guard 已启用。
 
 以下仍是发布阻断，不能因本地构建通过而勾选完成：
 
@@ -332,9 +317,7 @@ P1 完整可靠性目标：
 5. 新安装未验证前，旧安装目录不得被删除。
 6. 替换后任何受控失败必须尝试恢复旧安装。
 7. 回滚失败时不得删除旧目录、备份目录或部分新安装中的任一恢复来源。
-8. P0.5 不执行 `.old`、`.failed` 或其他隔离树的异步/延迟递归清理；
-   P1 也只有在 helper 重新绑定对象身份、快照和精确 delete set 后才能
-   自动清理。
+8. 异步清理只允许操作本次安装生成的精确备份路径。
 9. Defender 配置和旧目录清理失败不得伪装成安装失败。
 10. 用户目录中的正式 Skills、SQLite 和 OpenClaw state 不属于安装 payload。
 11. 任何会替换已确认旧安装的路径都必须满足“新版本提交成功、旧树恢复
@@ -345,9 +328,9 @@ P1 完整可靠性目标：
     被后续安装自动采用。
 14. 安装场景分类必须先于进程停止、PowerShell/helper 启动、旧卸载器、
     文件重命名和 payload 写入。
-15. P0 不得新增任何 destructive cleanup；P0.5 不执行旧安装树卸载器，
-    且任何替换或递归删除 `$INSTDIR` 的路径，都必须同时取得 content
-    guard result 与匹配 `plannedMutation` 的一次性 authorization。
+15. P0 不得新增任何 destructive cleanup；P0.5 接入内容保护后，任何替换、
+    旧卸载器调用或递归删除 `$INSTDIR` 的路径，都必须先取得 content
+    guard 的 `safe-to-replace` 或 `foreign-content-protected` 结果。
     根不存在/为空且仅作为 write-only target 时可使用严格的
     `content-guard-empty-write-only-target`；该状态不能为任何
     delete/rename 根放行。
@@ -398,7 +381,7 @@ updatedFlag:
   present | absent
 
 uiMode:
-  wizard | progress-visible | silent
+  interactive | silent
 
 launcherFallback:
   none | wizard-no-args | unknown
@@ -450,19 +433,17 @@ P0.5 推荐判定顺序：
    等启动来源。
 2. 确认本次安装范围：`currentUser` 或 `allUsers`。
 3. 同时读取 HKCU、HKLM 的 INSTALL key、`InstallLocation`、UNINSTALL
-   key 和 `UninstallString`。这些值只能发现 source candidate，不能证明
-   source identity、选择 inventory 或授权执行/删除；不能因为
-   `InstallLocation` 丢失就忽略候选，也不能把候选直接升格为权威 source。
-4. 对 `$INSTDIR` 及注册候选路径中的主程序、卸载器和资源目录验证
-   版本绑定 footprint、architecture 与 scope evidence。
+   key 和 `UninstallString`。`UninstallString` 可反推出旧 source，也是
+   existing evidence，不能因为 `InstallLocation` 丢失就忽略。
+4. 检查 `$INSTDIR` 及注册路径中的主程序、卸载器和资源目录。
 5. 对注册路径、目标路径和当前安装范围做规范化比较。
 6. 检查另一注册范围是否存在同路径或不同路径的安装，生成只读
    `sourceCandidates`、target 和 scope 候选。
 7. 根据候选动作列出 `rootsToMutate`。每项必须包含规范化物理路径、
    attempt 内唯一 `rootId`、`source|target` 角色和计划操作；旧 source、
    非空且会被覆盖的 target 都是独立门禁对象。`rootId` 由安装器对
-   canonical root + role + attempt-scoped random salt 派生，不接受外部
-   输入；跨提权安全认证另用 FR-13 的独立 security nonce。
+   canonical root + role + attemptId 派生，不接受外部输入；需要跨提权
+   安全认证时另用 FR-13 的独立 security nonce。
 8. 对 `rootsToMutate` 中每个非空根执行独立 install-root content guard
    的早期只读扫描；全新安装的空 target 可显式记为
    `content-guard-empty-write-only-target`。
@@ -576,11 +557,7 @@ foreign 内容都进入 `FailedBeforeMutation`。
 
 ### 3.5 `/S` 与 `--updated` 契约
 
-`updatedFlag`、`uiMode` 与 `promptPolicy` 正交。`--updated` 本身不是
-`${Silent}`：应用内更新默认是 `progress-visible +
-no-gating-prompts`；只有 `/S` 才是 `silent + no-ui`。
-
-两种模式都不得依赖安装范围页、目录页或流程中段门控 `MessageBox`：
+静默模式不得依赖安装范围页、目录页或 `MessageBox`：
 
 1. source、target、scope 唯一，footprint 有效且 content guard 允许时继续；
 2. `dual-same-path` 需要显式 `/currentuser`、`/allusers` 或可信 launcher
@@ -590,12 +567,6 @@ no-gating-prompts`；只有 `/S` 才是 `silent + no-ui`。
 4. 显式 `/D` 可作为 relocation target，但不能替代旧 source 验证；
 5. `--updated` 遇到路径 mismatch 时不得自动解释成 relocation，除非
    launcher 同时提供经过约束的 source、target 和 scope。
-
-guard 阻断时，无 `/S` 的 `--updated` 必须进入 installer-native 终态
-结果页并显示关联内容保护 spec 的本地化文案；`/S`（包括
-`--updated /S`）不得显示 MessageBox 或结果页，只返回稳定非零退出码。
-所有 stock/custom 弹窗点必须通过编译产物合同枚举，而不能仅检查本 spec
-新增的 guard 分支。
 
 ## 4. 用户场景
 
@@ -755,11 +726,9 @@ roots 边界内的进程
 - 检查 legacy Skills；
 - 调用外部程序；
 - 重命名旧目录；
-- P0 运行兼容旧卸载器。
+- 运行兼容旧卸载器。
 
 preflight 不得修改文件、注册表或进程状态。
-P0.5 action planner 不得选择“运行旧树卸载器”；注册表和旧 EXE 只保留
-为 discovery/诊断输入。
 
 P0 至少可靠区分 `fresh-install` 与“可能存在旧安装”，并保持其他现有
 fallback 行为。P0.5 再根据启动来源、`--updated`、`/S`、当前 scope、
@@ -984,10 +953,9 @@ P0.5 不得把 `$INSTDIR` 一律当作 legacy source。它必须遍历 action pl
 ```
 
 `relocate-reinstall` 的 legacy source 是旧注册/`UninstallString` 解析出的
-candidate 经受信 footprint 验证后得到的 source，不是注册表字符串本身，
-也不是新 target；不得从 target 猜测或导入 legacy 数据。检查结果、backup
-manifest 和 protection receipt 都必须绑定 canonical source root 与
-rootId。任一 destructive source 未检查完整时不得 stage/删除。
+source，不是新 target；不得从 target 猜测或导入 legacy 数据。检查结果、
+backup manifest 和 protection receipt 都必须绑定 canonical source root
+与 rootId。任一 destructive source 未检查完整时不得 stage/删除。
 
 ### FR-7：legacy Skills 结果必须分类
 
@@ -1120,26 +1088,17 @@ P0.5 进入事务替换前必须按 action 证明 source eligibility：
 - payload、新主程序、卸载器、`app.asar` 和实际运行时入口校验；
 - 受控失败调用统一 rollback；
 - 回滚失败时不删除任一恢复来源；
-- P0.5 即使已经 `committed`，也保留本次 `.old`/`.failed` 隔离树，不
-  派发异步或延迟递归清理；P1 helper 只有重新验证对象身份、快照和精确
-  delete set 后才能清理 app-owned 内容。
+- 只有 `committed`，且 P0.5 install-root content 状态为
+  `safe-to-replace` 或 `foreign-content-protected` 后，才清理本次
+  精确旧目录中的 app-owned 内容。
 
 P0.5 的 `StageOldInstall` 调用失败时：若 `MoveFileW` 未发生且 source
 验证未变化，可在 mutation 前 typed fail；若 move 已成功但后置双向验证
-失败，mutation 已发生，只能在新快照、source/destination identity evidence
-和独立 `restore-staged-source-tree` authorization 都有效时尝试 rollback；
-identity 不匹配或证据不完整时 freeze 为 `recovery-required`，不得盲目
-回移。两种情况都不得降级到无完整旧树回滚的 destructive stock
-uninstaller。上述保证适用于四个事务 action，不能只覆盖 `--updated`。
-`blocked-conflict` 不得进入替换。
+失败，mutation 已发生，必须立即进入 rollback。两种情况都不得降级到无
+完整旧树回滚的 destructive stock uninstaller。上述保证适用于四个事务
+action，不能只覆盖 `--updated`。`blocked-conflict` 不得进入替换。
 rollback 开始前不得删除唯一恢复源；rollback 失败后不得继续清理旧树、
 失败树、Skills 备份或诊断状态。
-
-P0.5 继承 covered-version 现有路径型 `MoveFileW` stage/rollback，只是
-“收窄既有 mutation 面”的阶段性选择，并未关闭高完整性进程在用户可写
-ancestor 下的路径重新解析窗口。权限模型 ADR 未明确放行这种 root 时，
-必须在 mutation 前阻断。post-rename identity 检查只能 detect/contain，
-不能当作 pre-rename TOCTOU 已被防止；handle-bound rename 留给 P1。
 
 ### FR-11：资源解压 watchdog 语义必须保留
 
@@ -1216,21 +1175,10 @@ nonce 只进入 admin-only control record，不进入普通日志或用户可写
 attempt 文件；inner/UAC worker 复用受保护 handoff 中的 nonce，不自行
 替换。
 
-阶段边界必须显式：P0 只落地 GUID 生成、跨 relaunch 复用和现有日志关联。
-P0.5 为 content guard 提前落地最小 durable control outcome：只由 elevated
-worker 写经 ADR 批准的 admin-only control journal，记录 guard status、
-failureKind、uiMode、plannedMutation 和 `mutationStarted=false`。它不向
-`%APPDATA%`/`userData` 写用户态 terminal attempt，也不引入 opaque
-quarantine。其余 durable phase/outcome、用户态 result bridge、secure
-handoff、quarantine 与 recovery 闭环属于 P1。P0 不得为了“先写齐状态”
-引入 `recovery-required`、fresh quarantine 或 ProgramData control
-journal。
-
-P0.5 首跳集中来自没有新 helper/attempt reader 的 2026.7.17/2026.7.23。
-因此 content guard 阻断的主反馈合同是：无 `/S` 的 `--updated` 进入
-installer-native 终态页，`/S` 零 UI 并返回稳定非零；不能要求恢复启动的
-旧应用读取新 schema。P1 非提权 launcher 才是用户态 terminal attempt 的
-唯一 writer 和 relaunch owner。
+阶段边界必须显式：P0 只落地 GUID 生成、跨 relaunch 复用和现有日志关联；
+下面的 durable phase/outcome、secure control、quarantine 与 recovery
+闭环属于 P0.5/P1，除非条目另行标注。P0 不得为了“先写齐状态”引入
+`recovery-required`、fresh quarantine 或 ProgramData control journal。
 
 当前 P0 构建仍使用 `RequestExecutionLevel admin`：Windows 在执行任何
 NSIS 指令、进入 `.onInit` 之前完成 manifest 提权，因此常规路径没有一个
@@ -1308,11 +1256,9 @@ recovery-required
 仍待收敛，不是完整终态。runtime 未完成解压或验证时不得进入成功结果；
 P0/P1 都必须在提交前把运行时准备完成，或返回失败/回滚。
 
-`recovery-required` 是已知、持久的 mutation-frozen 结果：例如 attempt
-已记录 `process-termination-failed`、`process-state-unknown`，或 stage
-后发现 root identity 不匹配/证据不完整。现场未 commit、未 cleanup；
-只有满足独立恢复 authorization 时才可 rollback，否则只允许 FR-4 的受控
-恢复入口消费。
+`recovery-required` 是已知、持久的 mutation-frozen 结果：attempt 已记录
+`process-termination-failed` 或 `process-state-unknown`，现场未 commit、
+未 rollback、未 cleanup，只允许 FR-4 的受控恢复入口消费。
 `failed-partial-quarantined` 表示 fresh install 的 partial target 已整体
 rename 并保留，安装失败但不再占用原 target。
 
@@ -1393,7 +1339,6 @@ legacy-skill-backup-failed
 old-install-stage-failed
 legacy-uninstaller-failed
 content-guard-blocked
-install-root-destructive-fallback-blocked
 payload-install-failed
 runtime-extract-failed
 runtime-extract-timeout
@@ -1443,25 +1388,21 @@ win32_error
 elapsed_ms
 ```
 
-P0.5/P1 目标路径规则：
+P0.5+ 目标路径规则：
 
-- P0.5 elevated worker 不把 control/terminal outcome 写入解析到的
-  `%APPDATA%`；content guard 最小控制结果固定写受保护的 ProgramData
-  control root；
-- P1 非提权 bootstrap 的当前用户日志固定
-  `%APPDATA%\LobsterAI\Installer`；
+- 当前用户安装：固定 `%APPDATA%\LobsterAI\Installer`；
 - 全用户安装：固定 `%ProgramData%\LobsterAI\Installer`；
 - 不论最终 scope，任何驱动提权 commit/rollback 的 watchdog/control 状态
   都固定写 `%ProgramData%\LobsterAI\Installer\control\<attemptId>`，
   绝不写普通用户可修改的 `%APPDATA%`；
-- P1 应用内更新 attempt 结果：由非提权的用户态 launcher 写入当前用户
+- 应用内更新 attempt 结果：由非提权的用户态 launcher 写入当前用户
   `userData/updates/attempts`；
 - 日志导出发现用户目录和 ProgramData 候选目录；只读取当前 token 有权
   访问的日志，无 trusted original SID ACL 时明确提示需提权收集。
 
-P1 非提权 bootstrap 的 `attemptId` 和 `bootstrapId` 必须在启动 elevated
-worker 前生成。只有该非提权 bootstrap 可以先在当前用户目录写最小日志；
-elevated NSIS 不得猜 original SID 后代写。最终 scope 确定后：
+`.onInit` 时最终 scope 可能尚未确定，但 `attemptId` 和 `bootstrapId`
+必须在第一条日志之前生成。允许先在当前用户目录写最小 bootstrap 日志。
+最终 scope 确定后：
 
 1. current-user 以用户目录为 canonical；
 2. all-users 以 ProgramData 为 canonical，不依赖提供 UAC 凭据的管理员
@@ -1537,34 +1478,17 @@ userData。P1 再提供独立、明确确认的“同时删除全部用户数据
 
 本状态机只保留不可弱化的接口契约：
 
-1. root guard result 不能单独授权 mutation。每个根必须同时取得与同一
-   attempt/root/snapshot 绑定、匹配 `plannedMutation` 的一次性
-   authorization；只有不存在/为空且仅写入的 target 可取得
-   `write-only-empty-target`；
+1. 每个被替换、旧卸载器处理或递归删除的根必须取得
+   `safe-to-replace` 或 `foreign-content-protected`；只有不存在/为空且
+   仅写入的 target 可记录
+   `content-guard-empty-write-only-target`；
 2. `legacy-skill-protection-required` 只允许进入 FR-9 的 exact candidate
-   备份/校验；receipt 复验后也只可授权 stage 与满足新快照/identity 条件
-   的 restore，永不授权 cleanup/delete；
+   备份/校验，receipt 复验前仍不得 mutation；
 3. `foreign-content-detected`、`scan-incomplete`、
-   `inventory-unavailable`、`manifest-untrusted` 或
-   `content-integrity-mismatch` 在 P0.5 必须进入
+   `inventory-unavailable` 或 `manifest-untrusted` 必须进入
    `FailedBeforeMutation`；
-4. source version/architecture/scope/inventory key 必须来自同一条已鉴真
-   footprint/候选载体信任链。HKCU/HKLM `DisplayVersion`、
-   `UninstallString` 和 CLI 只能用于 discovery，不能签发删除、执行或
-   inventory selection capability；
-5. P0.5 不执行旧安装树代码。stock `uninstallOldVersion` 的 copy-out 和
-   in-place fallback 均必须从生成控制流不可达；修复版 uninstaller 的
-   guard 必须接在 `customRemoveFiles`、早于 `atomicRMDir`/`RMDir /r`；
-6. P0.5 的 `.old`/`.failed` 零自动 deferred cleanup；commit 成功、
-   用户确认或仅凭 attempt-scoped 路径都不能绕过对象身份和 delete-set
-   授权；
-7. 未覆盖 source version 在 P0.5 只稳定阻断并给完整备份/人工补救指引，
-   不增加整树 quarantine；P1 opaque quarantine 必须整组具备可信
-   bootstrap、receipt 和 handle-bound identity；
-8. 任何 stock fallback 或 best-effort 清理都不得覆盖 content guard
-   阻断结果；
-9. `/S` 零 UI；无 `/S` 的 `--updated` 在阻断时进入 installer-native
-   终态结果页，首跳不依赖旧应用读取新 attempt schema。
+4. 任何 stock fallback 都不得绕过该门禁；
+5. content guard 失败不能被 best-effort 清理语义覆盖。
 
 ### FR-20：P0 更新 URL 最小安全策略
 
@@ -1617,12 +1541,6 @@ P0-hotfix 必须把“文件状态恢复”和“恢复启动旧应用”分成�
 | `/S` 且无可信 relaunch intent | 禁止 |
 | `/S --force-run` + trusted handoff + 可确认交互用户会话 | 满足上述门禁时允许 |
 | `/S --force-run` 但无 trusted handoff 或无交互用户会话 | 禁止 |
-
-P0.5 content guard 阻断时还必须满足 installer-native 反馈合同：不得经过
-`customInstallerFailed`/`customBeforeInstallerQuit` 的既有 `Quit` 路径
-直接消失；无 `/S` 的 `--updated` 显示终态结果页，用户关闭后旧应用至多
-恢复启动一次；`/S` 仍零 UI。若 P1 trusted launcher handoff 已存在，
-launcher 是唯一 relaunch owner，NSIS 不得同时启动新/旧应用。
 
 旧应用拉起失败只记录 `old-app-relaunch-failed` 和 Win32 error，不能把已经
 成功的 rollback 改成 `rollback-failed`，也不得再次 mutation 或自动重复
@@ -1685,7 +1603,7 @@ customCheckAppRunning:
 10. `src/main/libs/appUpdateInstaller.ts` 使用系统绝对 PowerShell 路径并
     保留 UAC 取消识别。新 launcher 若在 fallback 前已创建受约束 attempt
     元数据，可记录 `invocationSource=app-update`、
-    `launcherFallback=wizard-no-args`、`uiMode=wizard`；安装器收到的
+    `launcherFallback=wizard-no-args`、`uiMode=interactive`；安装器收到的
     无参启动本身只能记录 `unknown`，不能凭猜测伪装成 update-mode。
 11. legacy Skills staging、manifest、恢复和清理绑定当前 `attemptId`。
 12. 普通卸载默认保留 userData；P0 保留现有日志路径并确保 attemptId
@@ -1742,10 +1660,7 @@ P0.5 的架构冻结及任何涉及权限边界的实现开始前，必须先批
 - all-users/Program Files/HKLM 哪些固定操作进入受约束提权 worker；
 - Defender exclusion 是否拆成独立、可选、best-effort 的提权操作；
 - original SID、ProgramData control ACL、HKCU/HKLM repair-only 入口中
-  哪些仍是必要能力，避免在权限边界未定时先建一套可能废弃的机器；
-- elevated worker 面对用户可写 ancestor 时，哪些根允许继续使用 P0.5
-  路径型 `MoveFileW`；P1 的逐级 no-follow 祖先句柄、file identity 与
-  handle-relative mutation 如何成为规范边界。
+  哪些仍是必要能力，避免在权限边界未定时先建一套可能废弃的机器。
 
 P0 继续保留当前 `RequestExecutionLevel admin`，不得在止血版直接删除。
 
@@ -1757,8 +1672,7 @@ P0.5 单独实现并评审：
 3. 按 action plan 的全部 `destructiveSourceRoots` 边界枚举进程；
 4. 版本绑定的旧版内置 Skills allowlist fast path；
 5. 独立 install-root content guard。
-6. `Scan -> Stop -> Rescan/ProtectLegacySkillCandidates ->
-   Final Revalidate -> Mutation` 顺序；
+6. `Scan -> Stop -> Rescan/Protect -> Final Revalidate -> Mutation` 顺序；
 7. secure watchdog/control journal 与 unknown-state recovery。
 
 P0.5 中的纯逻辑 action planner、writer 审计、historical inventory
@@ -1769,12 +1683,6 @@ SID、ACL、ProgramData control/recovery journal 或 repair worker 的最终
 进入同一候选包。若 P0 先单独发布，发布说明必须明确安装目录自建内容风险
 尚未修复，不能宣称 Windows 安装问题已经全部解决。
 
-当前已实现的 packaged-tree evidence generator 属于上述 ADR 前允许并行的
-取证与纯测试工作。它固定声明自身不授予删除或执行能力，没有接入 installer
-control flow，也不改变“安装目录自建内容保护尚未解决”的 P0 边界。真实
-产物 smoke、字段语义和未闭合限制统一记录在关联 content-protection spec
-§4.1，避免两份基线数据漂移。
-
 ### 6.2 PowerShell 调用分类
 
 | 当前用途 | P0 | P0.5 | P1 |
@@ -1784,7 +1692,7 @@ control flow，也不改变“安装目录自建内容保护尚未解决”的 P
 | legacy Skills 恢复 | 绝对 PowerShell + rollback | 同 P0 | 导入正式 userData |
 | Defender exclusion | 绝对 PowerShell，best-effort，不扩大范围 | 同 P0 | 独立安全 spec |
 | Electron 解压 watchdog | 绝对 PowerShell wrapper + 600000ms hard timeout | P0 语义 + secure journal、unknown-state freeze | 原生 hard watchdog |
-| 旧目录异步清理 | 失败保留并记录 | 禁用；`.old/.failed` preserve-only | helper 绑定对象身份与精确 delete set 后清理 |
+| 旧目录异步清理 | 失败保留并记录 | 受 content guard 约束 | helper 精确清理 |
 | 应用内提权启动安装器 | 绝对 PowerShell；app-side 记录 fallback，安装器无 handoff 时记 `unknown` | 同 P0 | 用户态原生 launcher |
 | 卸载时 Defender 清理 | best-effort | 同 P0 | 独立安全 spec |
 
@@ -1801,8 +1709,7 @@ helper 的职责：
 3. 检查旧 Skills 清单并事务备份；
 4. 校验备份结果；
 5. 恢复或导入 legacy Skills；
-6. 只消费同一 attempt/root/snapshot 的一次性
-   `delete-manifest-owned-set` authorization，对精确 delete set 执行清理；
+6. 在 content guard 已允许后，对本次 attempt 的精确旧路径执行清理；
 7. 用户态 launcher 通过 `ShellExecuteEx(runas)` 启动 NSIS、等待退出并
    写入 attempt 结果；
 8. 为 Electron extractor 提供 hard total timeout 和 child termination；
@@ -1841,7 +1748,7 @@ LobsterAI
   -> helper 使用 ShellExecuteEx(runas) 启动 NSIS
   -> helper 等待 NSIS 退出
   -> helper 写 userData attempt 终态
-  -> 成功时由 launcher 启动新版本
+  -> 成功时由 NSIS/launcher 启动新版本
   -> 失败时 launcher 重启旧版本
 ```
 
@@ -1852,10 +1759,6 @@ LobsterAI
 - 用户态 attempt 文件不需要由提权安装器写入；
 - 旧应用重启后可以区分已知失败和未知中断；
 - 可彻底移除应用侧 PowerShell launcher。
-
-launcher 是 P1 唯一 terminal writer 和 relaunch owner。NSIS 只返回受保护
-control result，不再并行启动新/旧应用，避免双 owner 导致重复启动或
-把 guard 阻断覆盖成泛化成功/失败。
 
 兼容性说明：
 
@@ -1942,10 +1845,6 @@ ResolveCandidateRoots
 换目录重装必须分别保存旧 source 与新 target 的扫描结果和快照；任何将被
 删除、rename 或覆盖的非空根未通过门禁时，整个动作在 mutation 前失败。
 
-当前工作树已拆除旧树执行和 `.old/.failed` 自动递归清理，并实现 assisted
-终态结果页；这些是止损切片，不是上述 guard 调用链已经落地。packaged
-evidence 的 exact-match helper 也不是可信 runtime selector。
-
 ### 6.7 安装尝试数据模型
 
 建议在共享模块定义：
@@ -2031,7 +1930,7 @@ status=<status>
 示例成功序列：
 
 ```text
-phase=action-planned action=fresh-install invocation_source=standalone updated_flag=absent ui_mode=wizard
+phase=action-planned action=fresh-install invocation_source=standalone updated_flag=absent ui_mode=interactive
 phase=target-processes-stopped status=phase-skipped reason=fresh-install
 phase=post-stop-content-rescanned status=phase-skipped reason=fresh-install
 phase=legacy-data-protected status=legacy-protection-not-required reason=legacy-source-not-present
@@ -2050,7 +1949,7 @@ P0.5 升级存在 legacy Skills，且受信 launcher 元数据明确记录了 fa
 ```text
 phase=candidate-roots-resolved status=success roots=1
 phase=content-guard-preflight-completed status=legacy-skill-protection-required candidates=2
-phase=action-planned action=update-in-place invocation_source=app-update updated_flag=absent ui_mode=wizard launcher_fallback=wizard-no-args
+phase=action-planned action=update-in-place invocation_source=app-update updated_flag=absent ui_mode=interactive launcher_fallback=wizard-no-args
 phase=preflight-complete status=success
 phase=target-processes-stopped status=success
 phase=post-stop-content-rescanned status=success
@@ -2145,7 +2044,7 @@ P0 不进行该拆分，避免紧急修复引入额外模板和宏作用域风�
 | 注册旧路径、手动选择空的新目标 | source/target 验证 | P0 保留 stock relocation；P0.5 `relocate-reinstall` | 失败恢复 source | 正常 |
 | HKCU/HKLM 同路径 | 双注册 + scope | P0 保持 selected-scope 现行路径；P0.5 替换一次并修注册 | P0 current-user 可能留 stale HKLM，P0.5 收敛 | 注册修复可单独重试 |
 | HKCU/HKLM 不同路径 | 双注册 + footprint | 选择前 `blocked-conflict`；交互选择后只处理权威 source | 未选中安装保留 | `/S` typed fail 或交互选择 |
-| content guard 非允许结果 | 独立模块 | mutation 前为 `FailedBeforeMutation`；post-rename identity mismatch 为 `recovery-required` | 前者旧树不变；后者冻结并保留所有路径 | 按独立 spec |
+| content guard 非允许结果 | 独立模块 | `FailedBeforeMutation` | 旧树不变 | 按独立 spec |
 | 无旧 Skills 目录 | NSIS 原生存在性检查 | 不启动迁移 helper | 不适用 | 正常 |
 | 旧 `skills.config.json` 损坏 | 解析失败 | 若 repair installer 的版本 allowlist 可信，仍可 conservative compare；否则保护未知目录 | 不丢额外目录 | 保护成功后继续 |
 | repair installer 自带 allowlist 缺失/损坏 | 构建期/运行时校验 | 禁用 fast path，无法检查则 fail closed | 旧树不变 | 修复包 |
@@ -2234,7 +2133,7 @@ post-stop rescan / final revalidate 顺序；这些断言不得伪装成 P0 已�
 3. UAC 取消仍映射稳定错误。
 4. PowerShell 不可用时 fallback 不会让 app 先退出后无安装器。
 5. 新 launcher 在 app-side attempt 中记录
-   `launcherFallback=wizard-no-args`、`uiMode=wizard`；无可信 handoff
+   `launcherFallback=wizard-no-args`、`uiMode=interactive`；无可信 handoff
    的安装器侧字段保持 `unknown`，不报告 update-mode 成功。
 6. 路径包含空格、中文、单引号和 shell 元字符时参数正确。
 7. 2026.7.17 的裸 PowerShell 启动失败后，
@@ -2515,10 +2414,6 @@ npm run dist:win
 
 ### 11.2 P0.5 验收
 
-packaged-tree evidence generator 只是前置取证；其 exact-match helper
-不等于可信 runtime selector，因此不满足下面的权限 ADR、content guard、
-selector、report-only 或 durable journal 验收，当前各项仍保持未勾选。
-
 - [ ] Windows 安装权限模型 ADR 已批准，再开始 SID/ACL/control/repair
       实现。
 - [ ] 启动方式、注册拓扑和目标内容分别记录，再映射为稳定 action。
@@ -2532,31 +2427,14 @@ selector、report-only 或 durable journal 验收，当前各项仍保持未勾�
       非提权 app 不承诺后台静默修复。
 - [ ] HKCU deferred repair 只在原始非提权用户上下文执行；提权 worker
       即使使用另一管理员凭据也不会写该管理员的 HKCU。
-- [ ] `/S`（含 `--updated /S`）零 UI 并返回稳定退出码；无 `/S` 的
-      `--updated` 无流程中段阻塞 MessageBox，guard 阻断进入
-      installer-native 终态结果页。
+- [ ] `/S` 和 `--updated` 不依赖交互页或阻塞 MessageBox。
 - [ ] 进程枚举覆盖 action plan 中每个 destructive source root 内的全部
       exe，且不误停另一安装目录。
 - [ ] 版本绑定 Skills allowlist 只在旧版、枚举和目录集合均可信时返回
       `legacy-no-extra-skill-directories`。
-- [ ] legacy/content 顺序为 scan、stop、post-stop rescan/protect exact
-      legacy candidates、final revalidate、mutation；pre-stop receipt
-      不能放行。
+- [ ] legacy/content 顺序为 scan、stop、post-stop rescan/protect、final
+      revalidate、mutation；pre-stop receipt 不能放行。
 - [ ] content guard 接口满足独立内容保护 spec，所有 fallback 均不能绕过。
-- [ ] source version/inventory selector 不信任 registry/CLI 单一来源；
-      未覆盖版本 P0.5 只阻断，不做 destructive fallback。
-- [ ] 旧 `UninstallString`/旧 EXE 只用于 discovery/诊断；copy-out 和
-      in-place 执行路径在 P0.5 不可达。
-- [ ] 修复版 uninstaller 的 guard 位于 `customRemoveFiles` 删除前置点；
-      旧版 Windows 设置卸载入口的不可回溯版本边界有完整备份警告。
-- [ ] `.old`/`.failed` 无异步、延迟或按路径自动递归清理；P0.5 只保留
-      covered-version 的既有 stage/rollback mutation 面。
-- [ ] report-only 仅运行在不进入 mutation 的 dry-run/受控 cohort；阻断
-      后不会继续旧 rename/uninstaller/delete 路径。
-- [ ] P0.5 content guard 的最小 durable outcome 只写 admin-only control
-      journal；elevated NSIS 不向 `%APPDATA%`/`userData` 代写用户终态。
-- [ ] 路径型 `MoveFileW` 的 ancestor TOCTOU 作为阶段风险由权限 ADR
-      门禁；post-rename 检查不被宣称为预防。
 - [ ] secure control/result 使用独立 128-bit CSPRNG nonce，而不是
       attemptId、PID 或 tick。
 - [ ] child 终止失败或状态未知使用 secure journal 持久化为
@@ -2570,8 +2448,7 @@ selector、report-only 或 durable journal 验收，当前各项仍保持未勾�
 - [ ] 进程停止只影响 action plan 的 destructive roots 及 Restart Manager
       证明的相关锁持有者。
 - [ ] legacy Skills 最终迁移到正式 userData Skills 根。
-- [ ] 用户态 launcher 能校验 NSIS control 终态并写 userData attempt
-      结果，且是唯一 terminal writer/relaunch owner。
+- [ ] 用户态 launcher 能获取 NSIS 终态并写 attempt 结果。
 - [ ] P1 原生 helper 在 commit 前完成并验证运行时解压，失败时安全回滚。
 - [ ] 已知安装失败不会自动重复同一 version/hash 包。
 - [ ] 失败 UI 区分预检、备份、payload、验证和 rollback。
@@ -2613,17 +2490,13 @@ selector、report-only 或 durable journal 验收，当前各项仍保持未勾�
 2. 实现正交输入和 action planner。
 3. 实现 repair、relocate 和双注册同路径 reconcile。
 4. 按 action plan 的 destructive roots 枚举全部进程。
-5. 按 scan、stop、post-stop rescan/protect exact legacy candidates、
-   final revalidate、mutation 顺序接入 Skills 和独立 install-root
-   content guard。
+5. 按 scan、stop、post-stop rescan/protect、final revalidate、mutation
+   顺序接入 Skills 和独立 install-root content guard。
 6. 加入版本绑定 Skills allowlist fast path。
 7. 实现 secure watchdog/control journal 与受控恢复。
 8. 按 ADR 增加受限、用户触发的 registration repair-only 提权入口。
-9. 定义 `/S` 零 UI 与 `--updated` progress-visible 终态结果页合同。
+9. 定义 `/S`、`--updated` 的稳定退出码和无交互行为。
 10. 独立完成兼容矩阵与内容保护 spec 验收。
-
-当前 packaged-tree evidence 只是第 5、10 项的 prerequisite，不代表
-content guard 已接入或任一 P0.5 spec 验收已经完成。
 
 ### 阶段 2：更新 attempt 闭环
 
