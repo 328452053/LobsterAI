@@ -36,6 +36,33 @@ describe('run-safety wire parser', () => {
     });
   });
 
+  test.each([
+    {
+      kind: RunSafetyTerminationKind.RunPromptExposureBudget,
+      cumulativeEstimatedPromptTokens: 2_100_000,
+    },
+    {
+      kind: RunSafetyTerminationKind.RunPromptEstimateUnavailable,
+      cumulativeEstimatedPromptTokens: undefined,
+    },
+  ])('keeps legacy prompt terminal $kind receive-only wire payloads parseable', ({
+    kind,
+    cumulativeEstimatedPromptTokens,
+  }) => {
+    const legacyPayload = {
+      kind,
+      rootInvocationId: 'legacy-root',
+      budgetScopeId: 'legacy-scope',
+      runId: 'legacy-run',
+      providerDispatchCount: 15,
+      ...(cumulativeEstimatedPromptTokens === undefined
+        ? {}
+        : { cumulativeEstimatedPromptTokens }),
+    };
+
+    expect(parseRunSafetyTermination(legacyPayload)).toEqual(legacyPayload);
+  });
+
   test('requires trusted root, run, and scope fields', () => {
     expect(parseRunSafetyTermination({
       ...validTermination,

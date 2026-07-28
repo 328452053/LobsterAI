@@ -5,6 +5,10 @@ import path from 'path';
 import type { IMStore } from '../im/imStore';
 import type { PopoInstanceConfig } from '../im/types';
 import type { SqliteStore } from '../sqliteStore';
+import {
+  applyManagedOpenClawRunSafety,
+  hasManagedOpenClawRunSafety,
+} from './openclawRunSafetyPolicy';
 
 export type EnterpriseUIAction = 'hide' | 'disable' | 'readonly';
 
@@ -1085,9 +1089,23 @@ export function mergeOpenClawConfigs(
     normalizedEnterpriseConfig.channels = normalizedChannels;
   }
 
-  const merged = stripMergedChannelTopLevelAccountCredentialFields(
+  let merged = stripMergedChannelTopLevelAccountCredentialFields(
     deepMerge(runtimeConfig, normalizedEnterpriseConfig),
   );
+  const runtimeAgents = isRecord(runtimeConfig.agents) ? runtimeConfig.agents : null;
+  const runtimeDefaults = isRecord(runtimeAgents?.defaults) ? runtimeAgents.defaults : null;
+  const enterpriseAgents = isRecord(enterpriseConfig.agents) ? enterpriseConfig.agents : null;
+  const enterpriseDefaults = isRecord(enterpriseAgents?.defaults) ? enterpriseAgents.defaults : null;
+  const runtimeRunSafety = runtimeDefaults?.runSafety;
+  const enterpriseRunSafety = enterpriseDefaults?.runSafety;
+  if (runtimeRunSafety !== undefined || enterpriseRunSafety !== undefined) {
+    if (runtimeRunSafety !== undefined && !hasManagedOpenClawRunSafety(runtimeConfig)) {
+      console.warn(
+        '[Enterprise] runtime runSafety policy was not managed; replacing it with the LobsterAI policy',
+      );
+    }
+    merged = applyManagedOpenClawRunSafety(merged);
+  }
 
   const mergedPluginLoadPaths = Array.from(new Set([
     ...readPluginLoadPaths(runtimeConfig),
@@ -1134,7 +1152,13 @@ export function mergeEnterpriseOpenclawConfig(runtimeConfigPath: string): void {
     const enterpriseConfig = JSON.parse(enterpriseRaw) as Record<string, unknown>;
 
     const merged = mergeOpenClawConfigs(runtimeConfig, enterpriseConfig);
-    fs.writeFileSync(runtimeConfigPath, JSON.stringify(merged, null, 2), 'utf-8');
+    const tmpPath = `${runtimeConfigPath}.tmp-${process.pid}-${Date.now()}`;
+    try {
+      fs.writeFileSync(tmpPath, `${JSON.stringify(merged, null, 2)}\n`, 'utf-8');
+      fs.renameSync(tmpPath, runtimeConfigPath);
+    } finally {
+      fs.rmSync(tmpPath, { force: true });
+    }
     console.log('[Enterprise] merged enterprise openclaw.json into runtime config');
   } catch (error) {
     console.error('[Enterprise] failed to merge enterprise openclaw.json:', error);

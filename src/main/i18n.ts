@@ -63,6 +63,12 @@ const translations: Record<LanguageType, Record<string, string>> = {
       '本地未能可靠建立本次任务的安全预算标识，已在调用模型前停止。请通过一条新指令重试。',
     runSafetyStateUnavailable:
       '本地安全状态暂时不可用，已在调用模型前停止。请稍后通过一条新指令重试。',
+    openClawRuntimeContractMismatchDev:
+      '本地 AI 引擎组件与当前应用不匹配（需要 OpenClaw {expectedVersion}，安全契约 {expectedContract}）。请运行 npm run openclaw:runtime:host 重新构建后重试。',
+    openClawRuntimeContractMismatchPackaged:
+      '本地 AI 引擎组件与当前应用版本不匹配，已阻止启动以避免使用错误的安全策略。请使用“快速修复”重试；若仍失败，请重新安装当前版本。',
+    openClawRuntimeConfigMismatch:
+      '本地 AI 引擎配置尚未按当前安全策略完整生成，已阻止启动。请使用“快速修复”重新生成配置后重试。',
 
     // Thinking-only hint
     taskThinkingOnly:
@@ -398,6 +404,12 @@ const translations: Record<LanguageType, Record<string, string>> = {
       'The local runtime could not reliably establish this task’s safety-budget identity, so it stopped before calling the model. Retry with a new instruction.',
     runSafetyStateUnavailable:
       'The local safety state is temporarily unavailable, so the task stopped before calling the model. Retry later with a new instruction.',
+    openClawRuntimeContractMismatchDev:
+      'The local AI runtime does not match this app (expected OpenClaw {expectedVersion}, safety contract {expectedContract}). Run npm run openclaw:runtime:host to rebuild it, then retry.',
+    openClawRuntimeContractMismatchPackaged:
+      'The local AI runtime does not match this app version. Startup was blocked to avoid using the wrong safety policy. Try Quick Repair; if the issue persists, reinstall this version.',
+    openClawRuntimeConfigMismatch:
+      'The local AI runtime configuration was not fully generated with the current safety policy, so startup was blocked. Use Quick Repair to regenerate the configuration, then retry.',
 
     // OAuth flow messages
     qwenOAuthRequestingDeviceCode: 'Requesting device authorization code...',

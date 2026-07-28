@@ -11,6 +11,17 @@ import {
 const patchFile = 'openclaw-z-agent-harness-run-safety.patch';
 
 describe('OpenClaw AgentHarness run-safety patch', () => {
+  test('contains one complete diff block for the harness contract and its tests', () => {
+    const patch = readCurrentOpenClawPatch(patchFile);
+    for (const file of [
+      'src/agents/harness/run-safety-contract.ts',
+      'src/agents/harness/run-safety-contract.test.ts',
+    ]) {
+      const header = `diff --git a/${file} b/${file}`;
+      expect(patch.split(header)).toHaveLength(2);
+    }
+  });
+
   test('fails closed before invoking an unversioned harness handler', () => {
     const contractAdded = readAddedPatchLines(
       readCurrentOpenClawPatchFileDiff(
@@ -33,7 +44,7 @@ describe('OpenClaw AgentHarness run-safety patch', () => {
     expect(lifecycleRemoved).toContain('await harness.runAttempt(params)');
   });
 
-  test('reserves and refines the final payload before the real transport', () => {
+  test('reserves and observes the final payload before the real transport', () => {
     const contractAdded = readAddedPatchLines(
       readCurrentOpenClawPatchFileDiff(
         patchFile,
@@ -45,19 +56,51 @@ describe('OpenClaw AgentHarness run-safety patch', () => {
       'runSafety.controller.reserveProviderDispatch({',
     );
     const estimateIndex = contractAdded.indexOf(
-      'estimateRunSafetyPromptTokens(finalPayload, model)',
+      'estimateRunSafetyPromptObservation(finalPayload, model)',
     );
-    const refinementIndex = contractAdded.indexOf(
-      'runSafety.controller.refineProviderPromptEstimate({',
+    const observationIndex = contractAdded.indexOf(
+      'runSafety.controller.observeProviderPromptEstimate({',
     );
     const transportIndex = contractAdded.indexOf('return await transport(finalPayload);');
 
     expect(reservationIndex).toBeGreaterThanOrEqual(0);
-    expect(estimateIndex).toBeGreaterThan(reservationIndex);
-    expect(refinementIndex).toBeGreaterThan(estimateIndex);
-    expect(transportIndex).toBeGreaterThan(refinementIndex);
+    expect(observationIndex).toBeGreaterThan(reservationIndex);
+    expect(estimateIndex).toBeGreaterThan(observationIndex);
+    expect(transportIndex).toBeGreaterThan(estimateIndex);
     expect(contractAdded).toContain(
       'runSafety.controller.completeProviderDispatch(providerDispatchId);',
+    );
+  });
+
+  test('keeps prompt observations fail-open and legacy prompt terminals receive-only', () => {
+    const contractAdded = readAddedPatchLines(
+      readCurrentOpenClawPatchFileDiff(
+        patchFile,
+        'src/agents/harness/run-safety-contract.ts',
+      ),
+    );
+    const contractTestsAdded = readAddedPatchLines(
+      readCurrentOpenClawPatchFileDiff(
+        patchFile,
+        'src/agents/harness/run-safety-contract.test.ts',
+      ),
+    );
+
+    expect(contractAdded).toContain(
+      'runSafety.controller.observeProviderPromptEstimate({',
+    );
+    expect(contractAdded).not.toContain('refineProviderPromptEstimate(');
+    expect(contractAdded).not.toContain(
+      'kind: RunSafetyTerminationKind.RunPromptExposureBudget',
+    );
+    expect(contractAdded).not.toContain(
+      'kind: RunSafetyTerminationKind.RunPromptEstimateUnavailable',
+    );
+    expect(contractTestsAdded).toContain(
+      'calls transport when final prompt estimation is unavailable',
+    );
+    expect(contractTestsAdded).toContain(
+      'calls transport when final prompt exposure exceeds the legacy threshold',
     );
   });
 
@@ -116,7 +159,8 @@ describe('OpenClaw AgentHarness run-safety patch', () => {
       'counts one normal send as one provider dispatch',
       'creates a new ticket for each recovery send on the shared controller',
       'does not call transport when the dispatch limit is exhausted',
-      'does not call transport when final prompt exposure exceeds the limit',
+      'calls transport when final prompt estimation is unavailable',
+      'calls transport when final prompt exposure exceeds the legacy threshold',
       'expect(transport).not.toHaveBeenCalled();',
       'it is not an in-process plugin sandbox',
       'A malicious plugin could perform',

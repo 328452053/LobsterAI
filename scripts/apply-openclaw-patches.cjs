@@ -359,24 +359,44 @@ const strongPatchValidators = {
       snippets: [
         'maxToolCallReservationsPerBudgetScope: 64',
         'maxProviderDispatchesPerBudgetScope: 32',
-        'maxCumulativeEstimatedPromptTokensPerBudgetScope: 2_000_000',
+        'legacyDiagnosticThreshold: 2_000_000',
         'warningRatio: 0.75',
         'reserveToolBatch(params: {',
         'reserveProviderDispatch(params: {',
+        'observeProviderPromptEstimate(params: {',
+        'legacyEstimatedExposureUnitsTotal',
+        'knownEstimateDispatchCount',
+        'estimateUnavailableDispatchCount',
+        'pendingObservationDispatchCount',
+        'legacyDiagnosticThresholdCrossed',
+        'run_prompt_exposure_threshold_crossed',
+        'run_prompt_exposure_estimate_unavailable_observed',
+        'run_safety_scope_summary',
         'containsUnknownRemoteMedia',
         'publishTerminalOnce(reason: RunSafetyTermination): boolean {',
         'if (this.scopeTerminalReasonValue) {',
-        // The prompt-exposure budget is calibrated in tokens; the estimator
-        // must count CJK-aware token equivalents with a bounded per-blob
-        // inline-media estimate, never raw serialized bytes.
+        // Keep the historical estimator algorithm stable for comparable
+        // observe-only telemetry; it is not provider usage or a billing unit.
         'estimateStringChars, estimateTokensFromChars',
         'INLINE_MEDIA_TOKEN_ESTIMATE',
       ],
-      forbiddenSnippets: ['Buffer.byteLength(serialized'],
+      forbiddenSnippets: [
+        'Buffer.byteLength(serialized',
+        'maxCumulativeEstimatedPromptTokensPerBudgetScope',
+        'refineProviderPromptEstimate(',
+        'kind: RunSafetyTerminationKind.RunPromptExposureBudget',
+        'kind: RunSafetyTerminationKind.RunPromptEstimateUnavailable',
+        'continuationClosedReasonValue = RunSafetyTerminationKind.RunPromptExposureBudget',
+      ],
     },
     {
       file: 'src/agents/run-safety-controller.test.ts',
       snippets: [
+        'allows the configured provider dispatches and blocks the next one before dispatch',
+        'keeps prompt observations immutable and idempotent',
+        'observes prompt exposure above the legacy threshold without terminating',
+        'records an unavailable prompt estimate without terminating',
+        'reserves a raw tool batch in declaration order before blocking overflow calls',
         'publishes only the first product terminal outcome',
         'expect(coordinator.publishTerminalOnce(first)).toBe(true)',
         'expect(coordinator.publishTerminalOnce(second)).toBe(false)',
@@ -411,10 +431,15 @@ const strongPatchValidators = {
       snippets: [
         'params.controller.reserveToolBatch({',
         'params.controller.reserveProviderDispatch({',
-        'const finalEstimate = estimateRunSafetyPromptTokens(finalPayload, payloadModel);',
-        'params.controller.refineProviderPromptEstimate({',
+        'estimateRunSafetyPromptObservation(finalPayload, payloadModel)',
+        'params.controller.observeProviderPromptEstimate({',
         'runWithRunSafetyProviderDispatch',
         'maxRetries: 0',
+      ],
+      forbiddenSnippets: [
+        'refineProviderPromptEstimate(',
+        'kind: RunSafetyTerminationKind.RunPromptExposureBudget',
+        'kind: RunSafetyTerminationKind.RunPromptEstimateUnavailable',
       ],
       orderedSnippets: [
         'const safetyDecisions = params.controller.reserveToolBatch({',
@@ -517,9 +542,13 @@ const strongPatchValidators = {
         'runSafety: z',
         'maxToolCallReservationsPerBudgetScope: z.number().int().positive().safe().optional()',
         'maxProviderDispatchesPerBudgetScope: z.number().int().positive().safe().optional()',
-        'maxCumulativeEstimatedPromptTokensPerBudgetScope: z',
+        'promptExposure: z',
+        'legacyDiagnosticThreshold: z',
       ],
-      forbiddenSnippets: ['maxToolCallingRounds'],
+      forbiddenSnippets: [
+        'maxToolCallingRounds',
+        'maxCumulativeEstimatedPromptTokensPerBudgetScope',
+      ],
     },
     {
       file: 'packages/agent-core/src/agent-loop.ts',
@@ -578,7 +607,34 @@ const strongPatchValidators = {
         'Native CLI',
         'tool calls remain opaque to the host',
         'export function reserveCliProviderDispatch',
-        'RunPromptEstimateUnavailable',
+        'observeProviderPromptEstimate({',
+      ],
+      forbiddenSnippets: [
+        'kind: RunSafetyTerminationKind.RunPromptExposureBudget',
+        'kind: RunSafetyTerminationKind.RunPromptEstimateUnavailable',
+      ],
+    },
+    {
+      file: 'src/agents/cli-runner.run-safety.test.ts',
+      snippets: [
+        'spawns after recording unavailable telemetry when the final CLI payload cannot be estimated',
+      ],
+    },
+    {
+      file: 'src/context-engine/run-safety-compaction.ts',
+      snippets: [
+        'reserveProviderDispatch({',
+        'observeProviderPromptEstimate({',
+      ],
+      forbiddenSnippets: [
+        'kind: RunSafetyTerminationKind.RunPromptExposureBudget',
+        'kind: RunSafetyTerminationKind.RunPromptEstimateUnavailable',
+      ],
+    },
+    {
+      file: 'src/context-engine/run-safety-compaction.test.ts',
+      snippets: [
+        'calls compaction transport when final prompt estimation is unavailable',
       ],
     },
     {
@@ -642,7 +698,7 @@ const strongPatchValidators = {
       snippets: [
         'reserves the Anthropic without-thinking recovery as a second provider dispatch',
         'counts the final payload instead of the larger Agent Context and disables SDK retries',
-        'atomically refines concurrent dispatches exactly to the prompt limit',
+        'continues transport when final prompt estimation is unavailable',
         'blocks the next logical dispatch before invoking the provider',
         'blocks raw overflow calls and stops after the allowed sibling settles',
       ],
@@ -893,9 +949,14 @@ const strongPatchValidators = {
         'Unversioned AgentHarness runAttempt is not permitted.',
         'Unversioned AgentHarness compact is not permitted.',
         'runSafety.controller.reserveProviderDispatch({',
-        'estimateRunSafetyPromptTokens(finalPayload, model)',
-        'runSafety.controller.refineProviderPromptEstimate({',
+        'estimateRunSafetyPromptObservation(finalPayload, model)',
+        'runSafety.controller.observeProviderPromptEstimate({',
         'return await transport(finalPayload);',
+      ],
+      forbiddenSnippets: [
+        'refineProviderPromptEstimate(',
+        'kind: RunSafetyTerminationKind.RunPromptExposureBudget',
+        'kind: RunSafetyTerminationKind.RunPromptEstimateUnavailable',
       ],
     },
     {
@@ -948,7 +1009,8 @@ const strongPatchValidators = {
         'counts one normal send as one provider dispatch',
         'creates a new ticket for each recovery send on the shared controller',
         'does not call transport when the dispatch limit is exhausted',
-        'does not call transport when final prompt exposure exceeds the limit',
+        'calls transport when final prompt estimation is unavailable',
+        'calls transport when final prompt exposure exceeds the legacy threshold',
       ],
     },
   ],

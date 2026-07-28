@@ -2,6 +2,8 @@ export const RunSafetyTerminationKind = {
   VariantNoProgress: 'variant_no_progress',
   RunToolBudget: 'run_tool_budget',
   RunProviderDispatchBudget: 'run_provider_dispatch_budget',
+  // Receive-only compatibility for terminals persisted or emitted by older runtimes.
+  // The bundled runtime must not produce either prompt-related kind.
   RunPromptExposureBudget: 'run_prompt_exposure_budget',
   RunPromptEstimateUnavailable: 'run_prompt_estimate_unavailable',
   RunBudgetIdentityMissing: 'run_budget_identity_missing',

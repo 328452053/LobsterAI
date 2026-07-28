@@ -61,6 +61,9 @@ import type { OpenClawEngineManager } from './openclawEngineManager';
 import { repairHeartbeatFile, stripProactiveHeartbeatSection } from './openclawHeartbeatRepair';
 import { getMainAgentWorkspacePath } from './openclawMemoryFile';
 import { resolveOpenClawCatalogModelMaxTokens } from './openclawModelCatalog';
+import {
+  cloneManagedOpenClawRunSafety,
+} from './openclawRunSafetyPolicy';
 
 const gwDiagTs = (): string => {
   const d = new Date();
@@ -286,12 +289,6 @@ const MANAGED_OWNER_ALLOW_FROM = [
 ];
 
 const MANAGED_TOOL_DENY = ['web_search'] as const;
-const MANAGED_RUN_SAFETY = {
-  maxToolCallReservationsPerBudgetScope: 64,
-  maxProviderDispatchesPerBudgetScope: 32,
-  maxCumulativeEstimatedPromptTokensPerBudgetScope: 2_000_000,
-  warningRatio: 0.75,
-} as const;
 const MANAGED_TOOL_LOOP_DETECTION = {
   enabled: true,
   historySize: 40,
@@ -2259,7 +2256,7 @@ export class OpenClawConfigSync {
       agents: {
         defaults: {
           timeoutSeconds: OPENCLAW_AGENT_TIMEOUT_SECONDS,
-          runSafety: MANAGED_RUN_SAFETY,
+          runSafety: cloneManagedOpenClawRunSafety(),
           model: {
             primary: primaryModel,
           },
@@ -3884,6 +3881,11 @@ export class OpenClawConfigSync {
     const baseMinimalConfig: Record<string, unknown> = {
       gateway: {
         mode: 'local',
+      },
+      agents: {
+        defaults: {
+          runSafety: cloneManagedOpenClawRunSafety(),
+        },
       },
       // Don't enable plugins in minimal config — plugin loading via jiti happens
       // synchronously BEFORE the HTTP server binds, and can block gateway startup

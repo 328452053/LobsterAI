@@ -101,12 +101,41 @@ try {
 } catch {}
 READVER
 )
+DESIRED_RUN_SAFETY_CONTRACT=""
+DESIRED_RUN_SAFETY_CONTRACT=$(node - "$ELECTRON_ROOT" <<'READCONTRACT'
+const path = require('path');
+try {
+  const pkg = require(path.join(process.argv[2], 'package.json'));
+  if (pkg.openclaw && pkg.openclaw.runSafetyContract) {
+    console.log(pkg.openclaw.runSafetyContract);
+  }
+} catch {}
+READCONTRACT
+)
+if [[ -z "$DESIRED_VERSION" || -z "$DESIRED_RUN_SAFETY_CONTRACT" ]]; then
+  echo "package.json must declare openclaw.version and openclaw.runSafetyContract." >&2
+  exit 1
+fi
 
 # Compute a fingerprint of version-specific patch files so the build is invalidated when patches change.
 PATCHES_DIR="$ELECTRON_ROOT/scripts/patches/$DESIRED_VERSION"
 PATCH_HASH=""
 if [[ -d "$PATCHES_DIR" ]]; then
-  PATCH_HASH=$(cat "$PATCHES_DIR"/*.patch 2>/dev/null | sha256sum | cut -d' ' -f1)
+  PATCH_HASH=$(node - "$PATCHES_DIR" <<'READPATCHHASH'
+const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
+const patchesDir = process.argv[2];
+const patchFiles = fs.readdirSync(patchesDir)
+  .filter((name) => name.endsWith('.patch'))
+  .sort();
+const hash = crypto.createHash('sha256');
+for (const patchFile of patchFiles) {
+  hash.update(fs.readFileSync(path.join(patchesDir, patchFile)));
+}
+console.log(hash.digest('hex'));
+READPATCHHASH
+  )
 fi
 
 if [[ -n "$DESIRED_VERSION" && "${OPENCLAW_FORCE_BUILD:-}" != "1" ]]; then
@@ -126,9 +155,16 @@ try {
 } catch {}
 READPH
     )
-    if [[ "$BUILT_VERSION" == "$DESIRED_VERSION" && "$BUILT_PATCH_HASH" == "$PATCH_HASH" ]]; then
+    BUILT_RUN_SAFETY_CONTRACT=$(node - "$BUILD_INFO" <<'READCONTRACT'
+try {
+  const info = require(process.argv[2]);
+  console.log(info.runSafetyContract || '');
+} catch {}
+READCONTRACT
+    )
+    if [[ "$BUILT_VERSION" == "$DESIRED_VERSION" && "$BUILT_PATCH_HASH" == "$PATCH_HASH" && "$BUILT_RUN_SAFETY_CONTRACT" == "$DESIRED_RUN_SAFETY_CONTRACT" ]]; then
       if [[ -d "$OUT_DIR/node_modules" && -f "$OUT_DIR/gateway.asar" && -f "$OUT_DIR/dist/control-ui/index.html" ]]; then
-        echo "[openclaw-runtime] Already built for $DESIRED_VERSION (target=$TARGET_ID, patchHash=${PATCH_HASH:0:12}…), skipping."
+        echo "[openclaw-runtime] Already built for $DESIRED_VERSION (target=$TARGET_ID, patchHash=${PATCH_HASH:0:12}…, runSafetyContract=$DESIRED_RUN_SAFETY_CONTRACT), skipping."
         echo "[openclaw-runtime] Use OPENCLAW_FORCE_BUILD=1 to force rebuild."
         exit 0
       fi
@@ -136,6 +172,9 @@ READPH
     fi
     if [[ "$BUILT_VERSION" == "$DESIRED_VERSION" && "$BUILT_PATCH_HASH" != "$PATCH_HASH" ]]; then
       echo "[openclaw-runtime] Patches changed (was=${BUILT_PATCH_HASH:0:12}…, now=${PATCH_HASH:0:12}…), rebuilding."
+    fi
+    if [[ "$BUILT_VERSION" == "$DESIRED_VERSION" && "$BUILT_RUN_SAFETY_CONTRACT" != "$DESIRED_RUN_SAFETY_CONTRACT" ]]; then
+      echo "[openclaw-runtime] Run-safety contract changed (was=${BUILT_RUN_SAFETY_CONTRACT:-missing}, now=$DESIRED_RUN_SAFETY_CONTRACT), rebuilding."
     fi
   fi
   echo "[openclaw-runtime] Pinned version: $DESIRED_VERSION (current build: ${BUILT_VERSION:-none})"
@@ -188,7 +227,7 @@ cp -R "$PKG_DIR" "$OUT_DIR"
 
 # Save build metadata for traceability.
 # Use `node -` so stdin is treated as script and the following args remain user args.
-node - "$OUT_DIR" "$OPENCLAW_SRC" "$TARGET_ID" "$ELECTRON_ROOT" "$PATCH_HASH" <<'NODE'
+node - "$OUT_DIR" "$OPENCLAW_SRC" "$TARGET_ID" "$ELECTRON_ROOT" "$PATCH_HASH" "$DESIRED_RUN_SAFETY_CONTRACT" <<'NODE'
 const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
@@ -197,6 +236,7 @@ const src = process.argv[3];
 const target = process.argv[4];
 const electronRoot = process.argv[5];
 const patchHash = process.argv[6] || '';
+const runSafetyContract = process.argv[7] || '';
 
 // Read pinned version from package.json
 let openclawVersion = '';
@@ -222,6 +262,7 @@ const meta = {
   openclawVersion,
   openclawCommit,
   patchHash,
+  runSafetyContract,
 };
 fs.writeFileSync(path.join(outDir, 'runtime-build-info.json'), JSON.stringify(meta, null, 2) + '\n');
 NODE
