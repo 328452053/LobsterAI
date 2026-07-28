@@ -1,0 +1,124 @@
+import { describe, expect, test } from 'vitest';
+
+import {
+  buildCoworkBtwContextualQuestion,
+  COWORK_BTW_QUESTION_MAX_CHARS,
+  CoworkBtwCommandValidationError,
+  CoworkBtwStatus,
+  normalizeCoworkBtwSelectedTextQuestion,
+  parseCoworkBtwCommand,
+} from './btw';
+
+describe('parseCoworkBtwCommand', () => {
+  test('parses BTW and side aliases case-insensitively', () => {
+    expect(parseCoworkBtwCommand('/btw what changed?')).toEqual({
+      matched: true,
+      question: 'what changed?',
+    });
+    expect(parseCoworkBtwCommand('  /SIDE   why?  ')).toEqual({
+      matched: true,
+      question: 'why?',
+    });
+    expect(parseCoworkBtwCommand('/BtW 中文问题？')).toEqual({
+      matched: true,
+      question: '中文问题？',
+    });
+    expect(parseCoworkBtwCommand('/btw null\u0000byte')).toEqual({
+      matched: true,
+      question: 'nullbyte',
+    });
+  });
+
+  test('reports empty and multiline questions without falling through to chat', () => {
+    expect(parseCoworkBtwCommand('/btw')).toEqual({
+      matched: true,
+      question: '',
+      error: CoworkBtwCommandValidationError.EmptyQuestion,
+    });
+    expect(parseCoworkBtwCommand('/side  \nsecond line')).toEqual({
+      matched: true,
+      question: 'second line',
+      error: CoworkBtwCommandValidationError.MultilineUnsupported,
+    });
+    expect(parseCoworkBtwCommand('/btw first line\nsecond line')).toEqual({
+      matched: true,
+      question: 'first line\nsecond line',
+      error: CoworkBtwCommandValidationError.MultilineUnsupported,
+    });
+  });
+
+  test('does not match command-like prefixes', () => {
+    expect(parseCoworkBtwCommand('/btwx no')).toEqual({ matched: false });
+    expect(parseCoworkBtwCommand('please /btw explain')).toEqual({ matched: false });
+    expect(parseCoworkBtwCommand('/goal /btw explain')).toEqual({ matched: false });
+  });
+
+  test('rejects a side question above the bounded request size', () => {
+    const question = 'x'.repeat(COWORK_BTW_QUESTION_MAX_CHARS + 1);
+    expect(parseCoworkBtwCommand(`/btw ${question}`)).toEqual({
+      matched: true,
+      question,
+      error: CoworkBtwCommandValidationError.QuestionTooLong,
+    });
+  });
+
+  test('normalizes selected assistant text into the single-line BTW grammar', () => {
+    expect(normalizeCoworkBtwSelectedTextQuestion(
+      '  first line\n  second\tpart\u0000  ',
+    )).toBe('first line second part');
+  });
+
+  test('includes recent answered side-chat turns in a bounded single-line follow-up', () => {
+    const contextualQuestion = buildCoworkBtwContextualQuestion([
+      {
+        runId: 'btw-1',
+        sessionId: 'session-1',
+        question: 'What color is it?',
+        status: CoworkBtwStatus.Answered,
+        answer: 'Blue.\nIt is a dark blue.',
+        createdAt: 1,
+        completedAt: 2,
+      },
+      {
+        runId: 'btw-2',
+        sessionId: 'session-1',
+        question: 'Failed question',
+        status: CoworkBtwStatus.Failed,
+        error: 'Unavailable',
+        createdAt: 3,
+        completedAt: 4,
+      },
+      {
+        runId: 'btw-3',
+        sessionId: 'session-1',
+        question: 'Stopped question',
+        status: CoworkBtwStatus.Stopped,
+        createdAt: 5,
+        completedAt: 6,
+      },
+    ], 'Why was\nthat chosen?');
+
+    expect(contextualQuestion).toContain('What color is it?');
+    expect(contextualQuestion).toContain('Blue. It is a dark blue.');
+    expect(contextualQuestion).toContain('Why was that chosen?');
+    expect(contextualQuestion).not.toContain('Failed question');
+    expect(contextualQuestion).not.toContain('Stopped question');
+    expect(contextualQuestion).not.toMatch(/[\r\n]/);
+    expect(contextualQuestion.length).toBeLessThanOrEqual(COWORK_BTW_QUESTION_MAX_CHARS);
+  });
+
+  test('does not let large previous answers crowd out the current question', () => {
+    const currentQuestion = 'q'.repeat(12_000);
+    const contextualQuestion = buildCoworkBtwContextualQuestion([{
+      runId: 'btw-1',
+      sessionId: 'session-1',
+      question: 'Earlier question',
+      status: CoworkBtwStatus.Answered,
+      answer: 'a'.repeat(COWORK_BTW_QUESTION_MAX_CHARS),
+      createdAt: 1,
+      completedAt: 2,
+    }], currentQuestion);
+
+    expect(contextualQuestion).toBe(currentQuestion);
+  });
+});

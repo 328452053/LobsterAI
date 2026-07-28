@@ -1,15 +1,29 @@
 import { expect, test } from 'vitest';
 
+import {
+  COWORK_BTW_DRAFT_MAX_CHARS,
+  COWORK_BTW_EPHEMERAL_THREAD_LIMIT,
+  COWORK_BTW_THREAD_CONTENT_MAX_CHARS,
+  COWORK_BTW_THREAD_ENTRY_LIMIT,
+  CoworkBtwStatus,
+} from '../../../shared/cowork/btw';
 import { CoworkSessionStatusValue } from '../../types/cowork';
 import coworkReducer, {
   addMessage,
   addSession,
+  appendBtwEntry,
+  clearBtwDraftIfUnchanged,
   clearCurrentSession,
+  closeBtwThread,
+  deleteSession,
   finishSessionNavigation,
+  openBtwThread,
+  setBtwDraft,
   setConfig,
   setCurrentSession,
   setCurrentSessionId,
   setSessions,
+  settleBtwEntry,
   updateCurrentSessionModelOverride,
   updateMessageContent,
   updateSessionGoal,
@@ -272,6 +286,242 @@ test('updateSessionGoal updates the current session and session summary', () => 
   expect(cleared.currentSession?.updatedAt).toBe(1234);
   expect(cleared.sessions[0].goal).toBeNull();
   expect(cleared.sessions[0].updatedAt).toBe(1234);
+});
+
+test('keeps editable BTW side-chat threads ephemeral and session-scoped', () => {
+  const session = makeSession({ updatedAt: 1234 });
+  const initial = coworkReducer(undefined, addSession(session));
+  const opened = coworkReducer(initial, openBtwThread({
+    sessionId: session.id,
+    prefill: 'Selected\nassistant text',
+  }));
+  expect(opened.btwThreadsBySessionId[session.id]).toMatchObject({
+    isOpen: true,
+    draft: 'Selected\nassistant text',
+    entries: [],
+  });
+
+  const editedBeforeClose = coworkReducer(opened, setBtwDraft({
+    sessionId: session.id,
+    draft: 'Unsent edited draft',
+  }));
+  const reopenedWithoutSelection = coworkReducer(
+    coworkReducer(editedBeforeClose, closeBtwThread(session.id)),
+    openBtwThread({ sessionId: session.id }),
+  );
+  expect(reopenedWithoutSelection.btwThreadsBySessionId[session.id]?.draft)
+    .toBe('Unsent edited draft');
+  const reopenedFromSelection = coworkReducer(reopenedWithoutSelection, openBtwThread({
+    sessionId: session.id,
+    prefill: 'New selected text',
+  }));
+  expect(reopenedFromSelection.btwThreadsBySessionId[session.id]?.draft)
+    .toBe('New selected text');
+
+  const pending = coworkReducer(reopenedFromSelection, appendBtwEntry({
+    runId: 'btw-1',
+    sessionId: session.id,
+    question: 'What changed?',
+    status: CoworkBtwStatus.Pending,
+    createdAt: 10,
+  }));
+
+  expect(pending.btwThreadsBySessionId[session.id]?.entries[0]).toMatchObject({
+    question: 'What changed?',
+    status: CoworkBtwStatus.Pending,
+  });
+  expect(pending.currentSession?.messages).toEqual([]);
+  expect(pending.currentSession?.status).toBe(CoworkSessionStatusValue.Completed);
+  expect(pending.currentSession?.updatedAt).toBe(1234);
+
+  const stopped = coworkReducer(pending, settleBtwEntry({
+    runId: 'btw-1',
+    sessionId: session.id,
+    question: 'Hidden contextual request',
+    status: CoworkBtwStatus.Stopped,
+    createdAt: 10,
+    completedAt: 15,
+  }));
+  expect(stopped.btwThreadsBySessionId[session.id]?.entries[0]).toMatchObject({
+    question: 'What changed?',
+    status: CoworkBtwStatus.Stopped,
+    completedAt: 15,
+  });
+
+  const answered = coworkReducer(pending, settleBtwEntry({
+    runId: 'btw-1',
+    sessionId: session.id,
+    question: 'Hidden contextual request',
+    status: CoworkBtwStatus.Answered,
+    answer: '**Only docs.**',
+    createdAt: 10,
+    completedAt: 20,
+  }));
+  expect(answered.btwThreadsBySessionId[session.id]?.entries[0]).toMatchObject({
+    question: 'What changed?',
+    answer: '**Only docs.**',
+  });
+
+  const edited = coworkReducer(answered, setBtwDraft({
+    sessionId: session.id,
+    draft: 'Follow up',
+  }));
+  const cleared = coworkReducer(edited, clearBtwDraftIfUnchanged({
+    sessionId: session.id,
+    expectedDraft: 'Follow up',
+  }));
+  const closed = coworkReducer(cleared, closeBtwThread(session.id));
+  const switchedAway = coworkReducer(closed, clearCurrentSession());
+  expect(switchedAway.btwThreadsBySessionId[session.id]).toMatchObject({
+    isOpen: false,
+    draft: '',
+  });
+  expect(switchedAway.btwThreadsBySessionId[session.id]?.entries[0].answer)
+    .toBe('**Only docs.**');
+});
+
+test('clears BTW side-question state when its session is deleted', () => {
+  const session = makeSession();
+  const withBtw = coworkReducer(
+    coworkReducer(undefined, addSession(session)),
+    appendBtwEntry({
+      runId: 'btw-1',
+      sessionId: session.id,
+      question: 'Question',
+      status: CoworkBtwStatus.Failed,
+      error: 'Failed',
+      createdAt: 10,
+      completedAt: 20,
+    }),
+  );
+
+  const deleted = coworkReducer(withBtw, deleteSession(session.id));
+  expect(deleted.btwThreadsBySessionId[session.id]).toBeUndefined();
+});
+
+test('bounds side-chat entries without evicting a pending request', () => {
+  let state = coworkReducer(undefined, addSession(makeSession()));
+  state = coworkReducer(state, appendBtwEntry({
+    runId: 'btw-pending',
+    sessionId: 'session-1',
+    question: 'Pending question',
+    status: CoworkBtwStatus.Pending,
+    createdAt: 0,
+  }));
+
+  for (let index = 1; index <= COWORK_BTW_THREAD_ENTRY_LIMIT; index += 1) {
+    state = coworkReducer(state, appendBtwEntry({
+      runId: `btw-${index}`,
+      sessionId: 'session-1',
+      question: `Question ${index}`,
+      status: CoworkBtwStatus.Pending,
+      createdAt: index,
+    }));
+    state = coworkReducer(state, settleBtwEntry({
+      runId: `btw-${index}`,
+      sessionId: 'session-1',
+      question: `Wire question ${index}`,
+      status: CoworkBtwStatus.Answered,
+      answer: `Answer ${index}`,
+      createdAt: index,
+      completedAt: index,
+    }));
+  }
+
+  const entries = state.btwThreadsBySessionId['session-1'].entries;
+  expect(entries).toHaveLength(COWORK_BTW_THREAD_ENTRY_LIMIT);
+  expect(entries[0].runId).toBe('btw-pending');
+  expect(entries[0].status).toBe(CoworkBtwStatus.Pending);
+  expect(entries.some(entry => entry.runId === 'btw-1')).toBe(false);
+});
+
+test('bounds closed ephemeral BTW threads across sessions', () => {
+  const sessions = Array.from(
+    { length: COWORK_BTW_EPHEMERAL_THREAD_LIMIT + 1 },
+    (_, index) => makeSession({ id: `session-${index}` }),
+  );
+  let state = coworkReducer(undefined, setSessions(sessions));
+  for (const session of sessions) {
+    state = coworkReducer(state, openBtwThread({ sessionId: session.id }));
+    state = coworkReducer(state, closeBtwThread(session.id));
+  }
+
+  expect(Object.keys(state.btwThreadsBySessionId))
+    .toHaveLength(COWORK_BTW_EPHEMERAL_THREAD_LIMIT);
+  expect(state.btwThreadsBySessionId['session-0']).toBeUndefined();
+  expect(state.btwThreadsBySessionId[`session-${COWORK_BTW_EPHEMERAL_THREAD_LIMIT}`])
+    .toBeDefined();
+});
+
+test('prunes excess ephemeral threads as pending requests settle', () => {
+  const sessions = Array.from(
+    { length: COWORK_BTW_EPHEMERAL_THREAD_LIMIT + 2 },
+    (_, index) => makeSession({ id: `session-${index}` }),
+  );
+  let state = coworkReducer(undefined, setSessions(sessions));
+  for (const [index, session] of sessions.entries()) {
+    state = coworkReducer(state, appendBtwEntry({
+      runId: `btw-${index}`,
+      sessionId: session.id,
+      question: `Question ${index}`,
+      status: CoworkBtwStatus.Pending,
+      createdAt: index,
+    }));
+  }
+  expect(Object.keys(state.btwThreadsBySessionId)).toHaveLength(sessions.length);
+
+  for (const [index, session] of sessions.entries()) {
+    state = coworkReducer(state, settleBtwEntry({
+      runId: `btw-${index}`,
+      sessionId: session.id,
+      question: `Wire question ${index}`,
+      status: CoworkBtwStatus.Answered,
+      answer: `Answer ${index}`,
+      createdAt: index,
+      completedAt: index + 1,
+    }));
+  }
+
+  expect(Object.keys(state.btwThreadsBySessionId))
+    .toHaveLength(COWORK_BTW_EPHEMERAL_THREAD_LIMIT);
+  expect(state.btwThreadsBySessionId[`session-${sessions.length - 1}`])
+    .toBeDefined();
+});
+
+test('bounds side-chat drafts and completed answer content in renderer memory', () => {
+  let state = coworkReducer(undefined, addSession(makeSession()));
+  state = coworkReducer(state, openBtwThread({
+    sessionId: 'session-1',
+    prefill: 'x'.repeat(COWORK_BTW_DRAFT_MAX_CHARS + 100),
+  }));
+  expect(state.btwThreadsBySessionId['session-1'].draft)
+    .toHaveLength(COWORK_BTW_DRAFT_MAX_CHARS);
+
+  for (let index = 0; index < 5; index += 1) {
+    state = coworkReducer(state, appendBtwEntry({
+      runId: `large-${index}`,
+      sessionId: 'session-1',
+      question: `Question ${index}`,
+      status: CoworkBtwStatus.Pending,
+      createdAt: index,
+    }));
+    state = coworkReducer(state, settleBtwEntry({
+      runId: `large-${index}`,
+      sessionId: 'session-1',
+      question: `Wire ${index}`,
+      status: CoworkBtwStatus.Answered,
+      answer: 'a'.repeat(120_000),
+      createdAt: index,
+      completedAt: index + 1,
+    }));
+  }
+
+  const contentChars = state.btwThreadsBySessionId['session-1'].entries.reduce(
+    (total, entry) => total + entry.question.length + (entry.answer?.length ?? 0),
+    0,
+  );
+  expect(contentChars).toBeLessThanOrEqual(COWORK_BTW_THREAD_CONTENT_MAX_CHARS);
+  expect(state.btwThreadsBySessionId['session-1'].entries.length).toBeLessThan(5);
 });
 
 test('setCurrentSession preserves the agent id when inserting a summary', () => {

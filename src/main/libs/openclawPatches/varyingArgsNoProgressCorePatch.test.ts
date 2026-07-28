@@ -360,6 +360,9 @@ describe('OpenClaw varying-arguments no-progress core patch', () => {
 
     expect(script).toContain('const requiredRunSafetyPatchFiles = [');
     expect(script).toContain("'openclaw-varying-args-no-progress-core.patch'");
+    expect(script).toContain(
+      "'openclaw-varying-args-no-progress-correction-btw-utility.patch'",
+    );
     expect(script).toContain("'openclaw-varying-args-no-progress-delivery.patch'");
     expect(script).toContain(
       "'openclaw-varying-args-no-progress-native-receipt.patch'",

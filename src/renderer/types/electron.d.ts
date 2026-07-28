@@ -20,6 +20,13 @@ import type {
   CoworkBrowserAnnotationMessageBatch,
 } from '../../shared/cowork/browserAnnotations';
 import type {
+  CoworkBtwAbortRequest,
+  CoworkBtwAbortResponse,
+  CoworkBtwEntry,
+  CoworkBtwSubmitRequest,
+  CoworkBtwSubmitResponse,
+} from '../../shared/cowork/btw';
+import type {
   CoworkContextUsageFailureReason,
   CoworkContextUsageSource,
   CoworkSessionsChangedPayload,
@@ -856,6 +863,8 @@ interface IElectronAPI {
       code?: string;
       engineStatus?: OpenClawEngineStatus;
     }>;
+    submitBtw: (options: CoworkBtwSubmitRequest) => Promise<CoworkBtwSubmitResponse>;
+    abortBtw: (options: CoworkBtwAbortRequest) => Promise<CoworkBtwAbortResponse>;
     submitSteer: (options: { sessionId: string; text: string; clientSteerId: string }) => Promise<{
       success: boolean;
       status: 'pending' | 'accepted' | 'rejected';
@@ -1103,6 +1112,9 @@ interface IElectronAPI {
     ) => () => void;
     onStreamGoal?: (
       callback: (data: { sessionId: string; goal: CoworkGoal | null }) => void,
+    ) => () => void;
+    onStreamBtwResult?: (
+      callback: (data: { sessionId: string; result: CoworkBtwEntry }) => void,
     ) => () => void;
     onStreamContextMaintenance?: (
       callback: (data: { sessionId: string; active: boolean }) => void,

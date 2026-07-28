@@ -1,7 +1,6 @@
 import {
   ArchiveBoxArrowDownIcon,
   ArrowDownIcon,
-  ChatBubbleLeftIcon,
   DocumentArrowDownIcon,
   ExclamationTriangleIcon,
   PhotoIcon,
@@ -12,6 +11,13 @@ import { createPortal } from 'react-dom';
 import { useDispatch, useSelector } from 'react-redux';
 
 import { stripGoalCommandPrefixForDisplay } from '../../../common/sessionTitle';
+import {
+  buildCoworkBtwContextualQuestion,
+  COWORK_BTW_QUESTION_MAX_CHARS,
+  createCoworkBtwRunId,
+  normalizeCoworkBtwQuestion,
+  normalizeCoworkBtwSelectedTextQuestion,
+} from '../../../shared/cowork/btw';
 import { CoworkGoalStatus } from '../../../shared/cowork/goal';
 import type { CoworkImageAttachmentPreview } from '../../../shared/cowork/imageAttachments';
 import {
@@ -66,7 +72,11 @@ import {
 } from '../../store/slices/artifactSlice';
 import {
   addDraftSelectedTextSnippet,
+  clearBtwDraftIfUnchanged,
+  closeBtwThread,
+  openBtwThread,
   PlanConfirmationState,
+  setBtwDraft,
   setDraftCollaborationMode,
   setPlanConfirmationAwaiting,
   setPlanConfirmationHandled,
@@ -121,6 +131,7 @@ import {
   isWheelScrollingAwayFromBottom,
   shouldAutoScrollForPosition,
 } from './conversationScrollPolicy';
+import CoworkBtwFloatingPanel from './CoworkBtwFloatingPanel';
 import CoworkPromptInput, { type CoworkPromptInputRef } from './CoworkPromptInput';
 import LazyRenderTurn, { clearHeightCache } from './LazyRenderTurn';
 import {
@@ -138,6 +149,7 @@ import {
 import { parseProposedPlanBlock } from './proposedPlanParser';
 import { buildSelectedKitContextPrompt } from './selectedKitContextPrompt';
 import { buildSelectedSkillRoutingPrompt } from './selectedSkillRoutingPrompt';
+import SelectedTextActionToolbar from './SelectedTextActionToolbar';
 import {
   buildCoworkSessionJSON,
   buildCoworkSessionMarkdown,
@@ -239,7 +251,7 @@ const COWORK_DETAIL_MIN_WIDTH = 480;
 const ARTIFACT_PANEL_MIN_WIDTH_RATIO = 1 / 6;
 const SUBAGENT_PANEL_POLL_INTERVAL_MS = 5_000;
 const INVALID_FILE_NAME_PATTERN = /[<>:"/\\|?*\u0000-\u001F]/g;
-const SELECTED_TEXT_ACTION_HALF_WIDTH = 72;
+const SELECTED_TEXT_ACTION_HALF_WIDTH = 150;
 const SELECTED_TEXT_ACTION_SUPPRESS_MS = 250;
 const EXPANDED_CONVERSATION_PREVIEW_COLLAPSED_MAX_LENGTH = 140;
 const EXPANDED_CONVERSATION_PREVIEW_ITEM_MAX_LENGTH = 520;
@@ -779,9 +791,14 @@ const getSelectedAssistantTextRange = (): SelectedAssistantTextRange | null => {
 const getSelectedTextActionLeft = (rect: DOMRect, container: HTMLDivElement): number => {
   const containerRect = container.getBoundingClientRect();
   const selectionCenterX = rect.left - containerRect.left + rect.width / 2;
+  const availableHalfWidth = Math.max(0, (container.clientWidth - 16) / 2);
+  const actionHalfWidth = Math.min(
+    SELECTED_TEXT_ACTION_HALF_WIDTH,
+    availableHalfWidth,
+  );
   return Math.min(
-    container.clientWidth - SELECTED_TEXT_ACTION_HALF_WIDTH,
-    Math.max(SELECTED_TEXT_ACTION_HALF_WIDTH, selectionCenterX),
+    container.clientWidth - actionHalfWidth,
+    Math.max(actionHalfWidth, selectionCenterX),
   );
 };
 
@@ -1264,6 +1281,9 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
   );
   const planConfirmation = useSelector((state: RootState) =>
     currentSession?.id ? state.cowork.planConfirmations[currentSession.id] : undefined
+  );
+  const btwThread = useSelector((state: RootState) =>
+    currentSession?.id ? state.cowork.btwThreadsBySessionId[currentSession.id] : undefined
   );
   const queuedSteerCount = useSelector((state: RootState) => {
     if (!currentSession?.id) return 0;
@@ -1763,6 +1783,78 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
     closeSelectedTextAction({ clearSelection: true });
   }, [addSelectedTextSnippetToDraft, closeSelectedTextAction, selectedTextAction]);
 
+  const handleOpenSelectedTextInSideChat = useCallback(() => {
+    if (!selectedTextAction || !currentSession?.id) return;
+    const prefill = normalizeCoworkBtwQuestion(selectedTextAction.text);
+    const sourceMessageId = selectedTextAction.sourceMessageId;
+    const sessionId = currentSession.id;
+    closeSelectedTextAction({ clearSelection: true });
+    if (!prefill) return;
+
+    dispatch(openBtwThread({ sessionId, prefill }));
+    reportConversationNavigationAction({
+      actionType: 'selected_text_open_side_chat',
+      params: {
+        ...getConversationControlAnalyticsParams(),
+        sourceType: CoworkSelectedTextSource.AssistantMessage,
+        selectedTextLengthBucket: bucketLength(prefill.length),
+      },
+    });
+    logDetailDiagnostic(
+      `opened side chat from selected assistant text for session ${sessionId}; `
+      + `source is ${sourceMessageId}; characters=${prefill.length}`,
+    );
+  }, [
+    closeSelectedTextAction,
+    currentSession?.id,
+    dispatch,
+    getConversationControlAnalyticsParams,
+    selectedTextAction,
+  ]);
+
+  const handleSubmitBtwDraft = useCallback(() => {
+    if (!btwThread || !currentSession?.id) return;
+    const displayQuestion = normalizeCoworkBtwQuestion(btwThread.draft);
+    const normalizedQuestion = normalizeCoworkBtwSelectedTextQuestion(displayQuestion);
+    if (!normalizedQuestion) {
+      window.dispatchEvent(new CustomEvent('app:showToast', {
+        detail: i18nService.t('coworkBtwEmptyQuestion'),
+      }));
+      return;
+    }
+    if (normalizedQuestion.length > COWORK_BTW_QUESTION_MAX_CHARS) {
+      window.dispatchEvent(new CustomEvent('app:showToast', {
+        detail: i18nService.t('coworkBtwQuestionTooLong')
+          .replace('{limit}', String(COWORK_BTW_QUESTION_MAX_CHARS)),
+      }));
+      return;
+    }
+
+    const requestQuestion = buildCoworkBtwContextualQuestion(
+      btwThread.entries,
+      displayQuestion,
+    );
+    const sessionId = currentSession.id;
+    const runId = createCoworkBtwRunId();
+    logDetailDiagnostic(
+      `submitted side-chat draft for session ${sessionId}; run is ${runId}; `
+      + `display characters=${displayQuestion.length}; request characters=${requestQuestion.length}; `
+      + `previous entries=${btwThread.entries.length}`,
+    );
+    void coworkService.submitBtw({
+      sessionId,
+      question: requestQuestion,
+      displayQuestion,
+      runId,
+    }).then((accepted) => {
+      if (!accepted) return;
+      dispatch(clearBtwDraftIfUnchanged({
+        sessionId,
+        expectedDraft: btwThread.draft,
+      }));
+    });
+  }, [btwThread, currentSession?.id, dispatch]);
+
   const handleLocateSelectedText = useCallback((sourceMessageId: string) => {
     const container = scrollContainerRef.current;
     const element = Array.from(
@@ -1849,6 +1941,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
   const artifactTabsScrollRef = useRef<HTMLDivElement>(null);
   const contentRowRef = useRef<HTMLDivElement>(null);
   const promptInputAreaRef = useRef<HTMLDivElement>(null);
+  const promptContentAnchorRef = useRef<HTMLDivElement>(null);
   const rawSessionArtifacts = useSelector((state: RootState) =>
     sessionId ? state.artifact.artifactsBySession[sessionId] ?? EMPTY_ARTIFACTS : EMPTY_ARTIFACTS
   );
@@ -4925,16 +5018,12 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
           style={{ scrollbarGutter: 'stable both-edges' }}
         >
           {selectedTextAction && (
-            <button
-              type="button"
-              data-cowork-selected-text-action
-              onClick={handleAddSelectedText}
-              className="absolute z-40 inline-flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-border bg-surface px-3 py-1.5 text-xs font-medium text-foreground shadow-popover transition-colors hover:bg-surface-raised"
-              style={{ left: selectedTextAction.left, top: selectedTextAction.top }}
-            >
-              <ChatBubbleLeftIcon className="h-3.5 w-3.5 shrink-0 text-secondary" />
-              <span>{i18nService.t('coworkSelectedTextAddToChat')}</span>
-            </button>
+            <SelectedTextActionToolbar
+              left={selectedTextAction.left}
+              top={selectedTextAction.top}
+              onAddToChat={handleAddSelectedText}
+              onAskInSideChat={handleOpenSelectedTextInSideChat}
+            />
           )}
           {isLoadingMoreMessages && (
             <div className="py-2 text-center text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
@@ -5299,7 +5388,24 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
             </div>
           </div>
         )}
-        <div className={COWORK_DETAIL_CONTENT_CLASS}>
+        <div ref={promptContentAnchorRef} className={COWORK_DETAIL_CONTENT_CLASS}>
+          {btwThread && (
+            <CoworkBtwFloatingPanel
+              thread={btwThread}
+              promptAnchorRef={promptContentAnchorRef}
+              resolveLocalFilePath={resolveLocalFilePath}
+              onClose={() => dispatch(closeBtwThread(btwThread.sessionId))}
+              onDraftChange={draft => dispatch(setBtwDraft({
+                sessionId: btwThread.sessionId,
+                draft,
+              }))}
+              onSubmit={handleSubmitBtwDraft}
+              onStop={runId => void coworkService.abortBtw({
+                sessionId: btwThread.sessionId,
+                runId,
+              })}
+            />
+          )}
           {showExternalGoalStatusBar && (
             <div className={`relative z-10 ${showExternalSteerPreview ? 'mb-1.5' : '-mb-px'}`}>
               <div ref={setGoalStatusBarPortalTarget} />
