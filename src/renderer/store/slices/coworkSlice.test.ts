@@ -1,7 +1,6 @@
 import { expect, test } from 'vitest';
 
 import {
-  COWORK_BTW_DRAFT_MAX_CHARS,
   COWORK_BTW_EPHEMERAL_THREAD_LIMIT,
   COWORK_BTW_THREAD_CONTENT_MAX_CHARS,
   COWORK_BTW_THREAD_ENTRY_LIMIT,
@@ -334,27 +333,40 @@ test('keeps editable BTW side-chat threads ephemeral and session-scoped', () => 
   expect(reopenedWithoutSelection.btwThreadsBySessionId[session.id]?.selectedTextSnippets)
     .toEqual([firstSnippet]);
   const secondSnippet = makeSelectedTextSnippet('selected-2', 'New selected text');
-  const reopenedFromSelection = coworkReducer(reopenedWithoutSelection, openBtwThread({
+  const appendedFromSelection = coworkReducer(reopenedWithoutSelection, openBtwThread({
     sessionId: session.id,
-    selectedTextSnippets: [secondSnippet],
+    selectedTextSnippets: [firstSnippet, secondSnippet],
   }));
+  expect(appendedFromSelection.btwThreadsBySessionId[session.id]?.draft)
+    .toBe('Unsent edited draft');
+  expect(appendedFromSelection.btwThreadsBySessionId[session.id]?.selectedTextSnippets)
+    .toEqual([firstSnippet, secondSnippet]);
+
+  const replacementSnippet = makeSelectedTextSnippet('selected-3', 'Fresh selected text');
+  const reopenedFromSelection = coworkReducer(
+    coworkReducer(appendedFromSelection, closeBtwThread(session.id)),
+    openBtwThread({
+      sessionId: session.id,
+      selectedTextSnippets: [replacementSnippet],
+    }),
+  );
   expect(reopenedFromSelection.btwThreadsBySessionId[session.id]?.draft)
     .toBe('Unsent edited draft');
   expect(reopenedFromSelection.btwThreadsBySessionId[session.id]?.selectedTextSnippets)
-    .toEqual([secondSnippet]);
+    .toEqual([replacementSnippet]);
 
   const pending = coworkReducer(reopenedFromSelection, appendBtwEntry({
     runId: 'btw-1',
     sessionId: session.id,
     question: 'What changed?',
-    selectedTextSnippets: [secondSnippet],
+    selectedTextSnippets: [replacementSnippet],
     status: CoworkBtwStatus.Pending,
     createdAt: 10,
   }));
 
   expect(pending.btwThreadsBySessionId[session.id]?.entries[0]).toMatchObject({
     question: 'What changed?',
-    selectedTextSnippets: [secondSnippet],
+    selectedTextSnippets: [replacementSnippet],
     status: CoworkBtwStatus.Pending,
   });
   expect(pending.currentSession?.messages).toEqual([]);
@@ -402,7 +414,7 @@ test('keeps editable BTW side-chat threads ephemeral and session-scoped', () => 
     clearBtwComposerIfUnchanged({
       sessionId: session.id,
       expectedDraft: 'Follow up',
-      expectedSelectedTextSnippetIds: [secondSnippet.id],
+      expectedSelectedTextSnippetIds: [replacementSnippet.id],
     }),
   );
   expect(preservedAfterStaleClear.btwThreadsBySessionId[session.id]).toMatchObject({
@@ -533,14 +545,14 @@ test('prunes excess ephemeral threads as pending requests settle', () => {
     .toBeDefined();
 });
 
-test('bounds side-chat drafts and completed answer content in renderer memory', () => {
+test('keeps side-chat drafts intact and bounds older completed entries in renderer memory', () => {
   let state = coworkReducer(undefined, addSession(makeSession()));
+  const largeDraft = 'x'.repeat(40_000);
   state = coworkReducer(state, openBtwThread({
     sessionId: 'session-1',
-    prefill: 'x'.repeat(COWORK_BTW_DRAFT_MAX_CHARS + 100),
+    prefill: largeDraft,
   }));
-  expect(state.btwThreadsBySessionId['session-1'].draft)
-    .toHaveLength(COWORK_BTW_DRAFT_MAX_CHARS);
+  expect(state.btwThreadsBySessionId['session-1'].draft).toBe(largeDraft);
 
   for (let index = 0; index < 5; index += 1) {
     state = coworkReducer(state, appendBtwEntry({
@@ -567,6 +579,27 @@ test('bounds side-chat drafts and completed answer content in renderer memory', 
   );
   expect(contentChars).toBeLessThanOrEqual(COWORK_BTW_THREAD_CONTENT_MAX_CHARS);
   expect(state.btwThreadsBySessionId['session-1'].entries.length).toBeLessThan(5);
+
+  const oversizedLatestQuestion = 'q'.repeat(COWORK_BTW_THREAD_CONTENT_MAX_CHARS + 1);
+  state = coworkReducer(state, appendBtwEntry({
+    runId: 'oversized-latest',
+    sessionId: 'session-1',
+    question: oversizedLatestQuestion,
+    status: CoworkBtwStatus.Pending,
+    createdAt: 10,
+  }));
+  state = coworkReducer(state, settleBtwEntry({
+    runId: 'oversized-latest',
+    sessionId: 'session-1',
+    question: 'Wire oversized latest',
+    status: CoworkBtwStatus.Answered,
+    answer: 'Latest answer',
+    createdAt: 10,
+    completedAt: 11,
+  }));
+  expect(state.btwThreadsBySessionId['session-1'].entries).toHaveLength(1);
+  expect(state.btwThreadsBySessionId['session-1'].entries[0].question)
+    .toBe(oversizedLatestQuestion);
 });
 
 test('setCurrentSession preserves the agent id when inserting a summary', () => {

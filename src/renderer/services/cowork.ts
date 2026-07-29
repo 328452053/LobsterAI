@@ -6,7 +6,6 @@ import {
 } from '../../common/coworkSystemMessages';
 import type { OpenClawSessionPatch } from '../../common/openclawSession';
 import {
-  COWORK_BTW_QUESTION_MAX_CHARS,
   type CoworkBtwAbortRequest,
   CoworkBtwStatus,
   type CoworkBtwSubmitRequest,
@@ -1082,16 +1081,6 @@ class CoworkService {
     const displayQuestion = normalizedDisplayQuestion
       || (selectedTextSnippets.length > 0 ? '' : question);
     if (!question) {
-      return false;
-    }
-    if (question.length > COWORK_BTW_QUESTION_MAX_CHARS) {
-      const message = i18nService.t('coworkBtwQuestionTooLong')
-        .replace('{limit}', String(COWORK_BTW_QUESTION_MAX_CHARS));
-      window.dispatchEvent(new CustomEvent('app:showToast', { detail: message }));
-      this.logDiagnostic(
-        'warn',
-        `[CoworkBtw] rejected oversized question for session ${options.sessionId}; chars=${question.length}`,
-      );
       return false;
     }
     const existing = store.getState().cowork.btwThreadsBySessionId[options.sessionId]

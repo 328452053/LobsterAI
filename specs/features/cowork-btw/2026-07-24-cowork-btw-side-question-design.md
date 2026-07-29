@@ -141,18 +141,20 @@ when submitted from the normal composer.
   existing `Add to chat` action. It opens the floating window and places the
   selected excerpt in the same removable, expandable tag UI used by the main
   composer while leaving the text input independently editable. The user can
-  add a question or submit the selected excerpt directly. Opening from a new
-  selection replaces the previous side-chat excerpt instead of stacking
-  excerpts and preserves any independently typed draft.
+  add a question or submit the selected excerpt directly. Additional selections
+  append to the tag while the side-chat window remains open and preserve any
+  independently typed draft. Opening from a new selection after the window was
+  closed starts with that new excerpt instead of reviving stale unsent excerpts.
 
 The slash-command composer follows the pinned runtime's single-line command
 grammar and rejects multiline command input instead of falling through to
 normal chat. The floating window accepts multiline editing and collapses
-whitespace only when preparing the request. A BTW question is limited to
-16,000 characters at the parser, renderer service, main IPC, and runtime
-boundaries so malformed or direct IPC requests cannot consume an unbounded
-amount of memory. Session and run identifiers are independently limited to 512
-characters, and gateway session keys are rejected above 4,096 characters.
+whitespace only when preparing the request. The product does not impose or
+display a BTW question character limit. The OpenClaw adapter still applies the
+shared `chat.send` frame-size guard before transport, and follow-up history is
+bounded independently so it cannot grow with the editable question. Session
+and run identifiers remain limited to 512 characters, and gateway session keys
+are rejected above 4,096 characters.
 
 ### Floating Side-Chat Window
 
@@ -205,22 +207,26 @@ the normal message-list persistence model.
   calls the Cowork main-task `stopSession` path.
 - Closing hides the window but keeps its draft and exchanges in renderer
   memory. Reopening without a new selection restores the draft and excerpt tag
-  until reload or restart; opening from selected text replaces only the
-  previous excerpt tag.
+  until reload or restart. While the window remains open, additional selected
+  excerpts are appended subject to the shared count, duplicate, and size
+  limits. Opening from selected text after closing replaces only the stale
+  excerpt tags and preserves the independently typed draft.
 
 Each session owns one temporary side-chat thread with multiple exchanges. Only
 one request per session may be pending. The user can send another question
 after it settles. Follow-up requests include the newest answered exchanges
-that fit within the 16,000-character request bound; failed and pending
-exchanges are excluded from continuity context.
+that fit within a 16,000-character history-context budget; the current question
+is never truncated by that budget. Failed and pending exchanges are excluded
+from continuity context.
 
 Switching sessions does not move a window or its content to another session.
 Deleting the session removes the thread. Each thread is capped at 50 exchanges
 and 500,000 characters, and at most 12 inactive threads are retained across
 sessions. Old completed exchanges/threads are removed first and pending
 requests are never evicted. Individual answers remain capped at 120,000
-characters before they cross into the renderer, and editable draft storage is
-capped at 32,000 characters.
+characters before they cross into the renderer. Editable drafts are not
+truncated; if one completed exchange alone exceeds the renderer history budget,
+it is retained while older completed exchanges are evicted.
 
 ### Running-Turn Behavior
 

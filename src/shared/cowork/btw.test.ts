@@ -3,13 +3,18 @@ import { describe, expect, test } from 'vitest';
 import {
   buildCoworkBtwComposerQuestion,
   buildCoworkBtwContextualQuestion,
-  COWORK_BTW_QUESTION_MAX_CHARS,
+  COWORK_BTW_CONTEXT_MAX_CHARS,
   CoworkBtwCommandValidationError,
+  type CoworkBtwEntry,
   CoworkBtwStatus,
   normalizeCoworkBtwSelectedTextQuestion,
   parseCoworkBtwCommand,
+  resolveCoworkBtwSelectedTextSnippets,
 } from './btw';
-import { CoworkSelectedTextSource } from './selectedText';
+import {
+  CoworkSelectedTextSource,
+  CoworkSelectedTextValidationError,
+} from './selectedText';
 
 describe('parseCoworkBtwCommand', () => {
   test('parses BTW and side aliases case-insensitively', () => {
@@ -55,12 +60,11 @@ describe('parseCoworkBtwCommand', () => {
     expect(parseCoworkBtwCommand('/goal /btw explain')).toEqual({ matched: false });
   });
 
-  test('rejects a side question above the bounded request size', () => {
-    const question = 'x'.repeat(COWORK_BTW_QUESTION_MAX_CHARS + 1);
+  test('accepts a side question above the former product limit', () => {
+    const question = 'x'.repeat(20_000);
     expect(parseCoworkBtwCommand(`/btw ${question}`)).toEqual({
       matched: true,
       question,
-      error: CoworkBtwCommandValidationError.QuestionTooLong,
     });
   });
 
@@ -91,6 +95,48 @@ describe('parseCoworkBtwCommand', () => {
     );
     expect(withDraft).toMatch(/^Why does this recommendation make sense\?/);
     expect(withDraft).toContain('[Selected text excerpts]');
+  });
+
+  test('appends selected text while side chat is open and replaces it after close', () => {
+    const firstSnippet = {
+      id: 'selected-1',
+      text: 'First excerpt',
+      sourceMessageId: 'assistant-1',
+      sourceMessageType: CoworkSelectedTextSource.AssistantMessage,
+      sourceId: 'assistant-1',
+      sourceType: CoworkSelectedTextSource.AssistantMessage,
+      createdAt: 1,
+    };
+    const secondSnippet = {
+      ...firstSnippet,
+      id: 'selected-2',
+      text: 'Second excerpt',
+    };
+
+    expect(resolveCoworkBtwSelectedTextSnippets(
+      [firstSnippet],
+      [secondSnippet],
+      true,
+    )).toEqual({
+      success: true,
+      snippets: [firstSnippet, secondSnippet],
+    });
+    expect(resolveCoworkBtwSelectedTextSnippets(
+      [firstSnippet],
+      [secondSnippet],
+      false,
+    )).toEqual({
+      success: true,
+      snippets: [secondSnippet],
+    });
+    expect(resolveCoworkBtwSelectedTextSnippets(
+      [firstSnippet],
+      [{ ...firstSnippet, id: 'selected-duplicate' }],
+      true,
+    )).toEqual({
+      success: false,
+      error: CoworkSelectedTextValidationError.Duplicate,
+    });
   });
 
   test('includes recent answered side-chat turns in a bounded single-line follow-up', () => {
@@ -129,7 +175,7 @@ describe('parseCoworkBtwCommand', () => {
     expect(contextualQuestion).not.toContain('Failed question');
     expect(contextualQuestion).not.toContain('Stopped question');
     expect(contextualQuestion).not.toMatch(/[\r\n]/);
-    expect(contextualQuestion.length).toBeLessThanOrEqual(COWORK_BTW_QUESTION_MAX_CHARS);
+    expect(contextualQuestion.length).toBeLessThanOrEqual(COWORK_BTW_CONTEXT_MAX_CHARS);
   });
 
   test('keeps selected text context available to later side-chat follow-ups', () => {
@@ -158,17 +204,59 @@ describe('parseCoworkBtwCommand', () => {
   });
 
   test('does not let large previous answers crowd out the current question', () => {
-    const currentQuestion = 'q'.repeat(12_000);
+    const currentQuestion = 'q'.repeat(COWORK_BTW_CONTEXT_MAX_CHARS + 4_000);
     const contextualQuestion = buildCoworkBtwContextualQuestion([{
       runId: 'btw-1',
       sessionId: 'session-1',
       question: 'Earlier question',
       status: CoworkBtwStatus.Answered,
-      answer: 'a'.repeat(COWORK_BTW_QUESTION_MAX_CHARS),
+      answer: 'a'.repeat(COWORK_BTW_CONTEXT_MAX_CHARS),
       createdAt: 1,
       completedAt: 2,
     }], currentQuestion);
 
     expect(contextualQuestion).toBe(currentQuestion);
+  });
+
+  test('stops reading older answers after the follow-up context budget is full', () => {
+    let oldestAnswerRead = false;
+    const entries: CoworkBtwEntry[] = [
+      {
+        runId: 'btw-oldest',
+        sessionId: 'session-1',
+        question: 'Oldest question',
+        status: CoworkBtwStatus.Answered,
+        get answer() {
+          oldestAnswerRead = true;
+          return 'Oldest answer';
+        },
+        createdAt: 1,
+        completedAt: 2,
+      },
+      {
+        runId: 'btw-previous',
+        sessionId: 'session-1',
+        question: 'p'.repeat(2_000),
+        status: CoworkBtwStatus.Answered,
+        answer: 'a'.repeat(6_000),
+        createdAt: 3,
+        completedAt: 4,
+      },
+      {
+        runId: 'btw-latest',
+        sessionId: 'session-1',
+        question: 'q'.repeat(2_000),
+        status: CoworkBtwStatus.Answered,
+        answer: 'b'.repeat(6_000),
+        createdAt: 5,
+        completedAt: 6,
+      },
+    ];
+
+    const contextualQuestion = buildCoworkBtwContextualQuestion(entries, 'Current question');
+
+    expect(contextualQuestion).toContain('Current question');
+    expect(contextualQuestion).toContain('"answer":"bbbb');
+    expect(oldestAnswerRead).toBe(false);
   });
 });

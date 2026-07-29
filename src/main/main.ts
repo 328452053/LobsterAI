@@ -62,8 +62,8 @@ import {
   normalizeBrowserAnnotationBatches,
 } from '../shared/cowork/browserAnnotations';
 import {
+  COWORK_BTW_EVENT_QUESTION_MAX_CHARS,
   COWORK_BTW_IDENTIFIER_MAX_CHARS,
-  COWORK_BTW_QUESTION_MAX_CHARS,
   COWORK_BTW_RESULT_MAX_CHARS,
   type CoworkBtwAbortRequest,
   type CoworkBtwAbortResponse,
@@ -2800,7 +2800,7 @@ const bindCoworkRuntimeForwarder = (): void => {
     const safeResult: CoworkBtwEntry = {
       ...result,
       sessionId,
-      question: truncateIpcString(result.question, COWORK_BTW_QUESTION_MAX_CHARS),
+      question: truncateIpcString(result.question, COWORK_BTW_EVENT_QUESTION_MAX_CHARS),
       ...(result.answer !== undefined
         ? { answer: truncateIpcString(result.answer, COWORK_BTW_RESULT_MAX_CHARS) }
         : {}),
@@ -7524,16 +7524,6 @@ if (!gotTheLock) {
         error: t('coworkBtwSingleLine'),
       };
     }
-    if (question.length > COWORK_BTW_QUESTION_MAX_CHARS) {
-      return {
-        success: false,
-        runId,
-        error: t('coworkBtwQuestionTooLong', {
-          limit: COWORK_BTW_QUESTION_MAX_CHARS,
-        }),
-      };
-    }
-
     try {
       console.debug(
         '[CoworkBtw] side-question IPC received.',

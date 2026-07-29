@@ -21,7 +21,6 @@ import { createPortal } from 'react-dom';
 import { useDispatch, useSelector } from 'react-redux';
 
 import {
-  COWORK_BTW_QUESTION_MAX_CHARS,
   CoworkBtwCommandValidationError,
   createCoworkBtwRunId,
   parseCoworkBtwCommand,
@@ -1274,13 +1273,6 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
       }
       if (btwCommand.error === CoworkBtwCommandValidationError.MultilineUnsupported) {
         showToast(i18nService.t('coworkBtwMultilineUnsupported'));
-        return;
-      }
-      if (btwCommand.error === CoworkBtwCommandValidationError.QuestionTooLong) {
-        showToast(
-          i18nService.t('coworkBtwQuestionTooLong')
-            .replace('{limit}', String(COWORK_BTW_QUESTION_MAX_CHARS)),
-        );
         return;
       }
       if (!sessionId) {
