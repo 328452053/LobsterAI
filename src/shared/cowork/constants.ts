@@ -64,18 +64,6 @@ export const CoworkIpcChannel = {
 } as const;
 export type CoworkIpcChannel = typeof CoworkIpcChannel[keyof typeof CoworkIpcChannel];
 
-export const CoworkStopStatus = {
-  Aborted: 'aborted',
-  AlreadyIdle: 'already_idle',
-  Failed: 'failed',
-} as const;
-export type CoworkStopStatus = typeof CoworkStopStatus[keyof typeof CoworkStopStatus];
-
-export type CoworkStopResult =
-  | { status: typeof CoworkStopStatus.Aborted }
-  | { status: typeof CoworkStopStatus.AlreadyIdle }
-  | { status: typeof CoworkStopStatus.Failed; error: string };
-
 export interface CoworkSessionsChangedPayload {
   sessionIds: string[];
 }

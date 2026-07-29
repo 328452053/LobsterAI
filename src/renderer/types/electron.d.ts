@@ -30,7 +30,6 @@ import type {
   CoworkContextUsageFailureReason,
   CoworkContextUsageSource,
   CoworkSessionsChangedPayload,
-  CoworkStopStatus,
 } from '../../shared/cowork/constants';
 import type { CoworkGoal } from '../../shared/cowork/goal';
 import type { CoworkMessageRailIndexItem } from '../../shared/cowork/rail';
@@ -886,11 +885,7 @@ interface IElectronAPI {
       code?: string;
       engineStatus?: OpenClawEngineStatus;
     }>;
-    stopSession: (sessionId: string) => Promise<{
-      success: boolean;
-      status?: CoworkStopStatus;
-      error?: string;
-    }>;
+    stopSession: (sessionId: string) => Promise<{ success: boolean; error?: string }>;
     deleteSession: (sessionId: string) => Promise<{ success: boolean; error?: string }>;
     deleteSessions: (sessionIds: string[]) => Promise<{ success: boolean; error?: string }>;
     setSessionPinned: (options: {
