@@ -17,7 +17,6 @@ import { CoworkErrorModelSource } from '../../shared/cowork/errorDetail';
 import { normalizeMcpServerUrlInput } from '../../shared/mcp/url';
 import { OpenClawTranscriptSafetyLimit } from '../../shared/openclawTranscript/constants';
 import type {
-  ModelCompatibilityMode as ModelCompatibilityModeType,
   ModelRuntimeProfile as ModelRuntimeProfileType,
 } from '../../shared/providers';
 import {
@@ -1057,7 +1056,6 @@ export const buildProviderSelection = (options: {
   modelName?: string;
   contextWindow?: number;
   maxTokens?: number;
-  compatibilityMode?: ModelCompatibilityModeType;
   runtimeProfile?: unknown;
 }): OpenClawProviderSelection => {
   const providerName = options.providerName ?? '';
@@ -1093,9 +1091,6 @@ export const buildProviderSelection = (options: {
     providerId: descriptor.providerId,
     modelId: options.modelId,
     api,
-    baseUrl,
-    codingPlanEnabled: !!options.codingPlanEnabled,
-    compatibilityMode: options.compatibilityMode,
     serverRuntimeProfile: options.runtimeProfile,
   });
   const runtimeProfileDefinition = runtimeProfile
@@ -1959,7 +1954,6 @@ loopDetection: MANAGED_TOOL_LOOP_DETECTION,
         modelName: apiResolution.providerMetadata?.modelName,
         contextWindow: apiResolution.providerMetadata?.contextWindow,
         maxTokens: apiResolution.providerMetadata?.maxTokens,
-        compatibilityMode: apiResolution.providerMetadata?.compatibilityMode,
         runtimeProfile: apiResolution.providerMetadata?.runtimeProfile,
       });
       collectCompatibilityOwnerProfile(candidateModelProfiles, providerSelection);
@@ -1986,7 +1980,6 @@ loopDetection: MANAGED_TOOL_LOOP_DETECTION,
             modelName: m.name,
             contextWindow: m.contextWindow,
             maxTokens: m.maxTokens,
-            compatibilityMode: m.compatibilityMode,
           });
           collectCompatibilityOwnerProfile(candidateModelProfiles, sel);
           if (!allProvidersMap[sel.providerId]) {
