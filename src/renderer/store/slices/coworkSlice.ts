@@ -2,7 +2,6 @@ import { createSlice, PayloadAction } from '@reduxjs/toolkit';
 
 import type { CoworkBrowserAnnotationBatch } from '../../../shared/cowork/browserAnnotations';
 import {
-  COWORK_BTW_DRAFT_MAX_CHARS,
   COWORK_BTW_EPHEMERAL_THREAD_LIMIT,
   COWORK_BTW_THREAD_CONTENT_MAX_CHARS,
   COWORK_BTW_THREAD_ENTRY_LIMIT,
@@ -709,9 +708,7 @@ const coworkSlice = createSlice({
       };
       thread.isOpen = true;
       thread.selectedTextSnippets ??= [];
-      const prefill = stripNullChars(action.payload.prefill ?? '')
-        .trim()
-        .slice(0, COWORK_BTW_DRAFT_MAX_CHARS);
+      const prefill = stripNullChars(action.payload.prefill ?? '').trim();
       if (prefill) {
         thread.draft = prefill;
       }
@@ -741,8 +738,7 @@ const coworkSlice = createSlice({
     ) {
       const thread = state.btwThreadsBySessionId[action.payload.sessionId];
       if (!thread) return;
-      thread.draft = stripNullChars(action.payload.draft)
-        .slice(0, COWORK_BTW_DRAFT_MAX_CHARS);
+      thread.draft = stripNullChars(action.payload.draft);
       thread.updatedAt = Date.now();
     },
 
@@ -853,7 +849,10 @@ const coworkSlice = createSlice({
         || contentChars > COWORK_BTW_THREAD_CONTENT_MAX_CHARS
       ) {
         const removableIndex = thread.entries.findIndex(
-          candidate => candidate.status !== CoworkBtwStatus.Pending,
+          (candidate, index) => (
+            index < thread.entries.length - 1
+            && candidate.status !== CoworkBtwStatus.Pending
+          ),
         );
         if (removableIndex < 0) break;
         const [removed] = thread.entries.splice(removableIndex, 1);

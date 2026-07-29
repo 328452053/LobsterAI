@@ -21,7 +21,6 @@ import {
 } from '../../../shared/cowork/browserAnnotations';
 import {
   COWORK_BTW_IDENTIFIER_MAX_CHARS,
-  COWORK_BTW_QUESTION_MAX_CHARS,
   COWORK_BTW_RESULT_MAX_CHARS,
   type CoworkBtwAbortResponse,
   type CoworkBtwEntry,
@@ -4253,15 +4252,6 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
         error: t('coworkBtwSingleLine'),
       };
     }
-    if (normalizedQuestion.length > COWORK_BTW_QUESTION_MAX_CHARS) {
-      return {
-        success: false,
-        runId: normalizedRunId,
-        error: t('coworkBtwQuestionTooLong', {
-          limit: COWORK_BTW_QUESTION_MAX_CHARS,
-        }),
-      };
-    }
     if (this.pendingBtwRunBySessionId.has(normalizedSessionId)) {
       return {
         success: false,
@@ -4315,14 +4305,6 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
         };
       }
 
-      this.rememberSessionKey(normalizedSessionId, sessionKey);
-      const pending = this.registerPendingBtwRun({
-        clientRunId: normalizedRunId,
-        sessionId: normalizedSessionId,
-        sessionKey,
-        agentId,
-        question: normalizedQuestion,
-      });
       const runCwd = session.cwd?.trim() ? path.resolve(session.cwd.trim()) : undefined;
       const chatSendParams = {
         sessionKey,
@@ -4332,6 +4314,14 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
         ...(runCwd ? { cwd: runCwd } : {}),
       };
       assertOpenClawChatSendPayloadWithinLimit(normalizedSessionId, chatSendParams);
+      this.rememberSessionKey(normalizedSessionId, sessionKey);
+      const pending = this.registerPendingBtwRun({
+        clientRunId: normalizedRunId,
+        sessionId: normalizedSessionId,
+        sessionKey,
+        agentId,
+        question: normalizedQuestion,
+      });
       console.log(
         '[CoworkBtw] submitting side question.',
         `Session ${normalizedSessionId}.`,
@@ -6834,7 +6824,6 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       || sessionKey.length > OPENCLAW_BTW_SESSION_KEY_MAX_CHARS
       || (agentId?.length ?? 0) > COWORK_BTW_IDENTIFIER_MAX_CHARS
       || /[\r\n]/.test(question)
-      || question.length > COWORK_BTW_QUESTION_MAX_CHARS
       || !Number.isFinite(ts)
     ) {
       return null;

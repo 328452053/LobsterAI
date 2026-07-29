@@ -14,13 +14,9 @@ import React, {
 import { createPortal } from 'react-dom';
 
 import {
-  buildCoworkBtwComposerQuestion,
-  COWORK_BTW_DRAFT_MAX_CHARS,
-  COWORK_BTW_QUESTION_MAX_CHARS,
   type CoworkBtwEntry,
   CoworkBtwStatus,
   type CoworkBtwThread,
-  normalizeCoworkBtwSelectedTextQuestion,
 } from '../../../shared/cowork/btw';
 import type { CoworkSelectedTextSnippet } from '../../../shared/cowork/selectedText';
 import { i18nService } from '../../services/i18n';
@@ -189,9 +185,9 @@ const CoworkBtwFloatingPanel: React.FC<CoworkBtwFloatingPanelProps> = ({
     [thread.entries],
   );
   const pending = Boolean(pendingEntry);
-  const normalizedComposerQuestionLength = normalizeCoworkBtwSelectedTextQuestion(
-    buildCoworkBtwComposerQuestion(thread.draft, selectedTextSnippets),
-  ).length;
+  // Avoid allocating a trimmed copy of an unbounded controlled draft on every
+  // keystroke while preserving the whitespace-only disabled state.
+  const hasComposerContent = selectedTextSnippets.length > 0 || /\S/.test(thread.draft);
   const emptyThreadText = i18nService.t(
     selectedTextSnippets.length > 0
       ? 'coworkBtwEmptyThreadWithSelection'
@@ -200,9 +196,7 @@ const CoworkBtwFloatingPanel: React.FC<CoworkBtwFloatingPanelProps> = ({
   const pendingText = i18nService.t('coworkBtwPending');
   const failedText = i18nService.t('coworkBtwFailed');
   const stoppedText = i18nService.t('coworkBtwStopped');
-  const canSubmit = normalizedComposerQuestionLength > 0
-    && normalizedComposerQuestionLength <= COWORK_BTW_QUESTION_MAX_CHARS
-    && !pending;
+  const canSubmit = hasComposerContent && !pending;
   const handleEditQuestion = useCallback((entry: CoworkBtwEntry) => {
     const entrySelectedTextSnippets = entry.selectedTextSnippets ?? [];
     onDraftChangeRef.current(entry.question);
@@ -519,20 +513,11 @@ const CoworkBtwFloatingPanel: React.FC<CoworkBtwFloatingPanelProps> = ({
                 }
               }}
               rows={3}
-              maxLength={COWORK_BTW_DRAFT_MAX_CHARS}
               aria-label={i18nService.t('coworkBtwInputPlaceholder')}
               placeholder={i18nService.t('coworkBtwInputPlaceholder')}
               className="block max-h-32 min-h-20 w-full resize-none bg-transparent px-4 py-3 text-sm text-foreground outline-none placeholder:text-muted"
             />
-            <div className="flex items-center justify-between gap-2 px-3 pb-3 pt-1">
-              <span className={`text-[10px] ${
-                normalizedComposerQuestionLength > COWORK_BTW_QUESTION_MAX_CHARS
-                  ? 'text-danger'
-                  : 'text-muted'
-              }`}
-              >
-                {normalizedComposerQuestionLength}/{COWORK_BTW_QUESTION_MAX_CHARS}
-              </span>
+            <div className="flex items-center justify-end gap-2 px-3 pb-3 pt-1">
               <button
                 type="button"
                 onClick={() => {

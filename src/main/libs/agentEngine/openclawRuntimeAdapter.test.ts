@@ -25,7 +25,6 @@ import {
 } from '../../../shared/cowork/browserAnnotations';
 import {
   COWORK_BTW_IDENTIFIER_MAX_CHARS,
-  COWORK_BTW_QUESTION_MAX_CHARS,
   COWORK_BTW_RESULT_MAX_CHARS,
   CoworkBtwStatus,
 } from '../../../shared/cowork/btw';
@@ -2780,19 +2779,10 @@ test('stopping a BTW request aborts only its run and leaves the active main turn
   expect(adapter.activeTurns.get('session-1')).toBe(activeMainTurn);
 });
 
-test('BTW validates size, rejects mismatched routing, and accepts a normalized question', async () => {
+test('BTW validates identifiers, accepts large questions, and rejects mismatched routing', async () => {
   const { adapter, requests } = createRunTurnAdapter({
     autoFinalizeChatSend: false,
   });
-  await expect(adapter.submitBtw(
-    'session-1',
-    'x'.repeat(COWORK_BTW_QUESTION_MAX_CHARS + 1),
-    'btw-run-too-long',
-  )).resolves.toMatchObject({
-    success: false,
-    runId: 'btw-run-too-long',
-  });
-  expect(requests).toHaveLength(0);
   await expect(adapter.submitBtw(
     'session-1',
     'Question',
@@ -2804,11 +2794,15 @@ test('BTW validates size, rejects mismatched routing, and accepts a normalized q
 
   const resultListener = vi.fn();
   adapter.on('btwResult', resultListener);
+  const largeQuestion = 'x'.repeat(20_000);
   await expect(
-    adapter.submitBtw('session-1', 'Expected question?', 'btw-run-match'),
+    adapter.submitBtw('session-1', largeQuestion, 'btw-run-match'),
   ).resolves.toEqual({
     success: true,
     runId: 'btw-run-match',
+  });
+  expect(requests.find(request => request.method === 'chat.send')?.params).toMatchObject({
+    message: `/btw ${largeQuestion}`,
   });
 
   const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -2821,7 +2815,7 @@ test('BTW validates size, rejects mismatched routing, and accepts a normalized q
         runId: 'external-btw-run',
         sessionKey: 'agent:main:lobsterai:session-1',
         agentId: 'main',
-        question: 'Expected question?',
+        question: largeQuestion,
         text: 'External answer',
         ts: Date.now(),
       },
@@ -2833,7 +2827,7 @@ test('BTW validates size, rejects mismatched routing, and accepts a normalized q
         runId: 'btw-run-match',
         sessionKey: 'agent:main:lobsterai:another-session',
         agentId: 'main',
-        question: 'Expected question?',
+        question: largeQuestion,
         text: 'Wrong answer',
         ts: Date.now(),
       },
@@ -2867,6 +2861,37 @@ test('BTW validates size, rejects mismatched routing, and accepts a normalized q
   });
   expect(completedEntry.answer).toHaveLength(COWORK_BTW_RESULT_MAX_CHARS);
   expect(completedEntry.answer).not.toBe('x'.repeat(COWORK_BTW_RESULT_MAX_CHARS));
+});
+
+test('BTW rejects a transport-oversized question before registering a pending run', async () => {
+  const { adapter, requests } = createRunTurnAdapter({
+    autoFinalizeChatSend: false,
+  });
+  const resultListener = vi.fn();
+  adapter.on('btwResult', resultListener);
+  const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+  const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const byteLength = vi.spyOn(Buffer, 'byteLength').mockReturnValueOnce(
+    OPENCLAW_CHAT_SEND_PAYLOAD_SAFE_LIMIT_BYTES + 1,
+  );
+  try {
+    await expect(
+      adapter.submitBtw('session-1', 'Question', 'btw-run-frame-too-large'),
+    ).resolves.toMatchObject({
+      success: false,
+      runId: 'btw-run-frame-too-large',
+      error: expect.stringContaining('chat.send payload too large'),
+    });
+  } finally {
+    byteLength.mockRestore();
+    consoleError.mockRestore();
+    consoleWarn.mockRestore();
+  }
+
+  expect(requests).toHaveLength(0);
+  expect(resultListener).not.toHaveBeenCalled();
+  expect(adapter.pendingBtwRunBySessionId.has('session-1')).toBe(false);
+  expect(adapter.pendingBtwRuns.has('btw-run-frame-too-large')).toBe(false);
 });
 
 test('BTW chat.send rejection fails only the ephemeral request', async () => {

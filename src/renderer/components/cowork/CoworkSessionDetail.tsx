@@ -14,10 +14,9 @@ import { stripGoalCommandPrefixForDisplay } from '../../../common/sessionTitle';
 import {
   buildCoworkBtwComposerQuestion,
   buildCoworkBtwContextualQuestion,
-  COWORK_BTW_QUESTION_MAX_CHARS,
   createCoworkBtwRunId,
   normalizeCoworkBtwQuestion,
-  normalizeCoworkBtwSelectedTextQuestion,
+  resolveCoworkBtwSelectedTextSnippets,
 } from '../../../shared/cowork/btw';
 import { CoworkGoalStatus } from '../../../shared/cowork/goal';
 import type { CoworkImageAttachmentPreview } from '../../../shared/cowork/imageAttachments';
@@ -1798,7 +1797,12 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
       sourceType: CoworkSelectedTextSource.AssistantMessage,
       createdAt: Date.now(),
     };
-    const normalized = normalizeCoworkSelectedTextSnippets([selectedTextSnippet]);
+    const shouldAppendToOpenThread = btwThread?.isOpen === true;
+    const normalized = resolveCoworkBtwSelectedTextSnippets(
+      btwThread?.selectedTextSnippets ?? [],
+      [selectedTextSnippet],
+      shouldAppendToOpenThread,
+    );
     closeSelectedTextAction({ clearSelection: true });
     if (!normalized.success) {
       window.dispatchEvent(new CustomEvent('app:showToast', {
@@ -1820,14 +1824,23 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
       params: {
         ...getConversationControlAnalyticsParams(),
         sourceType: CoworkSelectedTextSource.AssistantMessage,
-        selectedTextLengthBucket: bucketLength(normalized.snippets[0].text.length),
+        selectedTextLengthBucket: bucketLength(selectedTextSnippet.text.length),
+        selectedSnippetCount: normalized.snippets.length,
+        selectedTextTotalLengthBucket: bucketLength(normalized.snippets.reduce(
+          (total, snippet) => total + snippet.text.length,
+          0,
+        )),
       },
     });
     logDetailDiagnostic(
       `opened side chat from selected assistant text for session ${sessionId}; `
-      + `source is ${sourceMessageId}; characters=${normalized.snippets[0].text.length}`,
+      + `source is ${sourceMessageId}; mode=${shouldAppendToOpenThread ? 'append' : 'replace'}; `
+      + `selected excerpts=${normalized.snippets.length}; `
+      + `characters=${normalized.snippets.reduce((total, snippet) => total + snippet.text.length, 0)}`,
     );
   }, [
+    btwThread?.isOpen,
+    btwThread?.selectedTextSnippets,
     closeSelectedTextAction,
     currentSession?.id,
     dispatch,
@@ -1843,17 +1856,9 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
       displayQuestion,
       selectedTextSnippets,
     );
-    const normalizedQuestion = normalizeCoworkBtwSelectedTextQuestion(composerQuestion);
-    if (!normalizedQuestion) {
+    if (!composerQuestion) {
       window.dispatchEvent(new CustomEvent('app:showToast', {
         detail: i18nService.t('coworkBtwEmptyQuestion'),
-      }));
-      return;
-    }
-    if (normalizedQuestion.length > COWORK_BTW_QUESTION_MAX_CHARS) {
-      window.dispatchEvent(new CustomEvent('app:showToast', {
-        detail: i18nService.t('coworkBtwQuestionTooLong')
-          .replace('{limit}', String(COWORK_BTW_QUESTION_MAX_CHARS)),
       }));
       return;
     }
