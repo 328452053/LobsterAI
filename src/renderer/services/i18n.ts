@@ -160,7 +160,6 @@ const translations: Record<LanguageType, Record<string, string>> = {
       '以 JSON 格式填写需要透传给模型的额外参数，如 {"reasoning_effort": "high"}。这些参数将直接传递给模型 API。',
     customParamsInvalidJson: '自定义参数格式不正确，请输入合法的 JSON 对象',
     kimiK3CustomParamsConflict: '以下参数由 Kimi K3 自动配置管理，请从自定义参数中移除：{keys}',
-    kimiK3CustomParamsReservedHint: 'Kimi K3 会自动管理思考、token 上限、流式 usage 和固定采样参数。',
     serverModelMetadataUnavailable: '套餐模型信息暂不可用，请刷新后重试',
     serverModelRuntimeProfileUnsupported: '套餐模型兼容配置不受支持',
     serverModelToolCallingUnavailable: '该模型尚未开放任务工具调用',
@@ -3355,8 +3354,6 @@ const translations: Record<LanguageType, Record<string, string>> = {
     customParamsInvalidJson: 'Invalid JSON format. Please enter a valid JSON object.',
     kimiK3CustomParamsConflict:
       'These parameters are managed automatically for Kimi K3. Remove them from Custom Params: {keys}',
-    kimiK3CustomParamsReservedHint:
-      'Kimi K3 automatically manages reasoning, token limits, streaming usage, and fixed sampling parameters.',
     serverModelMetadataUnavailable: 'Package model information is temporarily unavailable. Refresh and try again.',
     serverModelRuntimeProfileUnsupported: 'The package model compatibility profile is not supported.',
     serverModelToolCallingUnavailable: 'Task tool calling is not yet available for this model.',

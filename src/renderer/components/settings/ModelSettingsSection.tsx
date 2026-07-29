@@ -498,11 +498,6 @@ export const ModelEditorDialog: React.FC<ModelEditorDialogProps> = ({
                 <p className="mt-1 text-[11px] text-muted">
                   {i18nService.t('customParamsHint')}
                 </p>
-                {usesKimiK3RuntimeProfile && (
-                  <p className="mt-1 text-[11px] text-amber-600 dark:text-amber-400">
-                    {i18nService.t('kimiK3CustomParamsReservedHint')}
-                  </p>
-                )}
               </div>
             </div>
           </div>
