@@ -1,3 +1,7 @@
+import {
+  buildSelectedTextPromptSection,
+  type CoworkSelectedTextSnippet,
+} from './selectedText';
 import { stripNullChars } from './text';
 
 export const CoworkBtwStatus = {
@@ -30,6 +34,7 @@ export interface CoworkBtwEntry {
   runId: string;
   sessionId: string;
   question: string;
+  selectedTextSnippets?: CoworkSelectedTextSnippet[];
   status: CoworkBtwStatus;
   answer?: string;
   error?: string;
@@ -41,6 +46,7 @@ export interface CoworkBtwThread {
   sessionId: string;
   isOpen: boolean;
   draft: string;
+  selectedTextSnippets: CoworkSelectedTextSnippet[];
   entries: CoworkBtwEntry[];
   createdAt: number;
   updatedAt: number;
@@ -86,6 +92,18 @@ export const normalizeCoworkBtwSelectedTextQuestion = (value: string): string =>
   normalizeCoworkBtwQuestion(value).replace(/\s+/g, ' ')
 );
 
+export const buildCoworkBtwComposerQuestion = (
+  draft: string,
+  selectedTextSnippets: CoworkSelectedTextSnippet[] = [],
+): string => {
+  const normalizedDraft = normalizeCoworkBtwQuestion(draft);
+  const selectedTextSection = buildSelectedTextPromptSection(selectedTextSnippets);
+  if (!selectedTextSection) return normalizedDraft;
+  const question = normalizedDraft
+    || 'Analyze the selected text excerpt and answer it directly if it contains a question.';
+  return `${question}\n\n${selectedTextSection}`;
+};
+
 const truncateBtwContextValue = (value: string, maxChars: number): string => {
   if (value.length <= maxChars) return value;
   return `${value.slice(0, Math.max(0, maxChars - 1))}…`;
@@ -106,7 +124,10 @@ export const buildCoworkBtwContextualQuestion = (
     ))
     .map(entry => ({
       question: truncateBtwContextValue(
-        normalizeCoworkBtwSelectedTextQuestion(entry.question),
+        normalizeCoworkBtwSelectedTextQuestion(buildCoworkBtwComposerQuestion(
+          entry.question,
+          entry.selectedTextSnippets,
+        )),
         2_000,
       ),
       answer: truncateBtwContextValue(

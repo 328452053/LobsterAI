@@ -14,12 +14,15 @@ import React, {
 import { createPortal } from 'react-dom';
 
 import {
+  buildCoworkBtwComposerQuestion,
   COWORK_BTW_DRAFT_MAX_CHARS,
   COWORK_BTW_QUESTION_MAX_CHARS,
+  type CoworkBtwEntry,
   CoworkBtwStatus,
   type CoworkBtwThread,
   normalizeCoworkBtwSelectedTextQuestion,
 } from '../../../shared/cowork/btw';
+import type { CoworkSelectedTextSnippet } from '../../../shared/cowork/selectedText';
 import { i18nService } from '../../services/i18n';
 import EditIcon from '../icons/EditIcon';
 import MarkdownContent from '../MarkdownContent';
@@ -34,12 +37,15 @@ import {
   resizeCoworkBtwPanelGeometry,
 } from './coworkBtwPanelGeometry';
 import { MessageActionButton, MessageCopyButton } from './MessageActionButton';
+import SelectedTextSnippetBadge from './SelectedTextSnippetBadge';
 
 interface CoworkBtwFloatingPanelProps {
   thread: CoworkBtwThread;
   promptAnchorRef?: React.RefObject<HTMLElement | null>;
   onClose: () => void;
   onDraftChange: (draft: string) => void;
+  onSelectedTextSnippetsChange: (snippets: CoworkSelectedTextSnippet[]) => void;
+  onLocateSelectedText?: (sourceMessageId: string) => void;
   onSubmit: () => void;
   onStop: (runId: string) => void;
   resolveLocalFilePath?: (href: string, text: string) => string | null;
@@ -118,24 +124,37 @@ const logPanelGeometry = (
 const logQuestionLoadedForEditing = (
   sessionId: string,
   questionLength: number,
+  selectedTextSnippetCount: number,
 ): void => {
   try {
     window.electron?.log?.fromRenderer?.(
       'debug',
       'CoworkBtw',
       `loaded a previous side-chat question into the draft for session ${sessionId}; `
-      + `chars=${questionLength}.`,
+      + `chars=${questionLength}; selectedExcerpts=${selectedTextSnippetCount}.`,
     );
   } catch (error) {
     console.debug('[CoworkBtwFloatingPanel] failed to forward edit diagnostic.', error);
   }
 };
 
+const getEntryCopyContent = (entry: CoworkBtwEntry): string => (
+  [
+    ...(entry.selectedTextSnippets ?? []).map(snippet => snippet.text),
+    entry.question,
+  ]
+    .map(value => value.trim())
+    .filter(Boolean)
+    .join('\n\n')
+);
+
 const CoworkBtwFloatingPanel: React.FC<CoworkBtwFloatingPanelProps> = ({
   thread,
   promptAnchorRef,
   onClose,
   onDraftChange,
+  onSelectedTextSnippetsChange,
+  onLocateSelectedText,
   onSubmit,
   onStop,
   resolveLocalFilePath,
@@ -158,30 +177,50 @@ const CoworkBtwFloatingPanel: React.FC<CoworkBtwFloatingPanelProps> = ({
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const onDraftChangeRef = useRef(onDraftChange);
   onDraftChangeRef.current = onDraftChange;
+  const onSelectedTextSnippetsChangeRef = useRef(onSelectedTextSnippetsChange);
+  onSelectedTextSnippetsChangeRef.current = onSelectedTextSnippetsChange;
+  const onLocateSelectedTextRef = useRef(onLocateSelectedText);
+  onLocateSelectedTextRef.current = onLocateSelectedText;
   const sessionIdRef = useRef(thread.sessionId);
   sessionIdRef.current = thread.sessionId;
+  const selectedTextSnippets = thread.selectedTextSnippets ?? [];
   const pendingEntry = useMemo(
     () => thread.entries.find(entry => entry.status === CoworkBtwStatus.Pending),
     [thread.entries],
   );
   const pending = Boolean(pendingEntry);
-  const normalizedDraftLength = normalizeCoworkBtwSelectedTextQuestion(thread.draft).length;
-  const emptyThreadText = i18nService.t('coworkBtwEmptyThread');
+  const normalizedComposerQuestionLength = normalizeCoworkBtwSelectedTextQuestion(
+    buildCoworkBtwComposerQuestion(thread.draft, selectedTextSnippets),
+  ).length;
+  const emptyThreadText = i18nService.t(
+    selectedTextSnippets.length > 0
+      ? 'coworkBtwEmptyThreadWithSelection'
+      : 'coworkBtwEmptyThread',
+  );
   const pendingText = i18nService.t('coworkBtwPending');
   const failedText = i18nService.t('coworkBtwFailed');
   const stoppedText = i18nService.t('coworkBtwStopped');
-  const canSubmit = normalizedDraftLength > 0
-    && normalizedDraftLength <= COWORK_BTW_QUESTION_MAX_CHARS
+  const canSubmit = normalizedComposerQuestionLength > 0
+    && normalizedComposerQuestionLength <= COWORK_BTW_QUESTION_MAX_CHARS
     && !pending;
-  const handleEditQuestion = useCallback((question: string) => {
-    onDraftChangeRef.current(question);
+  const handleEditQuestion = useCallback((entry: CoworkBtwEntry) => {
+    const entrySelectedTextSnippets = entry.selectedTextSnippets ?? [];
+    onDraftChangeRef.current(entry.question);
+    onSelectedTextSnippetsChangeRef.current(entrySelectedTextSnippets);
     window.requestAnimationFrame(() => {
       const input = inputRef.current;
       if (!input) return;
       input.focus();
       input.setSelectionRange(input.value.length, input.value.length);
     });
-    logQuestionLoadedForEditing(sessionIdRef.current, question.length);
+    logQuestionLoadedForEditing(
+      sessionIdRef.current,
+      entry.question.length,
+      entrySelectedTextSnippets.length,
+    );
+  }, []);
+  const handleLocateSelectedText = useCallback((sourceMessageId: string) => {
+    onLocateSelectedTextRef.current?.(sourceMessageId);
   }, []);
   // Geometry and draft changes are high-frequency. Keep the potentially large
   // Markdown subtree stable unless its content, resolver, or locale changes.
@@ -193,65 +232,78 @@ const CoworkBtwFloatingPanel: React.FC<CoworkBtwFloatingPanelProps> = ({
         </div>
       )}
       <div className="space-y-3">
-        {thread.entries.map(entry => (
-          <article key={entry.runId} className="space-y-2">
-            <div className="group flex flex-col items-end">
-              <div className="w-fit max-w-[85%] rounded-2xl bg-surface-raised px-3 py-2 text-sm whitespace-pre-wrap break-words text-foreground shadow-subtle">
-                {entry.question}
-              </div>
-              <div className="pointer-events-none -mr-1 mt-0.5 flex min-h-7 items-center justify-end opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
-                <MessageCopyButton content={entry.question} />
-                <MessageActionButton
-                  label={i18nService.t('coworkReEdit')}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    handleEditQuestion(entry.question);
-                  }}
-                >
-                  <EditIcon className="h-4 w-4" />
-                </MessageActionButton>
-              </div>
-            </div>
-            <div className="group mr-8 px-1 py-1">
-              {entry.status === CoworkBtwStatus.Pending && (
-                <div className="flex items-center gap-2 text-sm text-muted">
-                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
-                  {pendingText}
+        {thread.entries.map((entry) => {
+          const entrySelectedTextSnippets = entry.selectedTextSnippets ?? [];
+          return (
+            <article key={entry.runId} className="space-y-2">
+              <div className="group flex flex-col items-end">
+                <div className="w-fit max-w-[85%] rounded-2xl bg-surface-raised px-3 py-2 text-sm whitespace-pre-wrap break-words text-foreground shadow-subtle">
+                  {entrySelectedTextSnippets.length > 0 && (
+                    <div className={entry.question ? 'mb-2' : undefined}>
+                      <SelectedTextSnippetBadge
+                        snippets={entrySelectedTextSnippets}
+                        align="right"
+                        onLocate={handleLocateSelectedText}
+                      />
+                    </div>
+                  )}
+                  {entry.question}
                 </div>
-              )}
-              {entry.status === CoworkBtwStatus.Answered && (
-                <MarkdownContent
-                  content={entry.answer ?? ''}
-                  className="prose dark:prose-invert max-w-none text-sm text-foreground"
-                  spacing="compact"
-                  resolveLocalFilePath={resolveLocalFilePath}
-                  showRevealInFolderAction
-                />
-              )}
-              {entry.status === CoworkBtwStatus.Answered && entry.answer && (
-                <div className="pointer-events-none -ml-1 mt-0.5 flex min-h-7 items-center opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
-                  <MessageCopyButton content={entry.answer} />
+                <div className="pointer-events-none -mr-1 mt-0.5 flex min-h-7 items-center justify-end opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
+                  <MessageCopyButton content={getEntryCopyContent(entry)} />
+                  <MessageActionButton
+                    label={i18nService.t('coworkReEdit')}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      handleEditQuestion(entry);
+                    }}
+                  >
+                    <EditIcon className="h-4 w-4" />
+                  </MessageActionButton>
                 </div>
-              )}
-              {entry.status === CoworkBtwStatus.Failed && (
-                <p className="whitespace-pre-wrap break-words text-sm text-danger">
-                  {entry.error || failedText}
-                </p>
-              )}
-              {entry.status === CoworkBtwStatus.Stopped && (
-                <p className="text-sm text-muted">
-                  {stoppedText}
-                </p>
-              )}
-            </div>
-          </article>
-        ))}
+              </div>
+              <div className="group mr-8 px-1 py-1">
+                {entry.status === CoworkBtwStatus.Pending && (
+                  <div className="flex items-center gap-2 text-sm text-muted">
+                    <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
+                    {pendingText}
+                  </div>
+                )}
+                {entry.status === CoworkBtwStatus.Answered && (
+                  <MarkdownContent
+                    content={entry.answer ?? ''}
+                    className="prose dark:prose-invert max-w-none text-sm text-foreground"
+                    spacing="compact"
+                    resolveLocalFilePath={resolveLocalFilePath}
+                    showRevealInFolderAction
+                  />
+                )}
+                {entry.status === CoworkBtwStatus.Answered && entry.answer && (
+                  <div className="pointer-events-none -ml-1 mt-0.5 flex min-h-7 items-center opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
+                    <MessageCopyButton content={entry.answer} />
+                  </div>
+                )}
+                {entry.status === CoworkBtwStatus.Failed && (
+                  <p className="whitespace-pre-wrap break-words text-sm text-danger">
+                    {entry.error || failedText}
+                  </p>
+                )}
+                {entry.status === CoworkBtwStatus.Stopped && (
+                  <p className="text-sm text-muted">
+                    {stoppedText}
+                  </p>
+                )}
+              </div>
+            </article>
+          );
+        })}
       </div>
     </>
   ), [
     emptyThreadText,
     failedText,
     handleEditQuestion,
+    handleLocateSelectedText,
     pendingText,
     resolveLocalFilePath,
     stoppedText,
@@ -440,6 +492,18 @@ const CoworkBtwFloatingPanel: React.FC<CoworkBtwFloatingPanelProps> = ({
 
         <div className="shrink-0 border-t border-border-subtle bg-surface p-3">
           <div className="rounded-2xl border border-border bg-surface shadow-card transition-[border-color,box-shadow] duration-200 focus-within:border-primary/35 focus-within:shadow-elevated">
+            {selectedTextSnippets.length > 0 && (
+              <div className="px-3 pt-3">
+                <SelectedTextSnippetBadge
+                  snippets={selectedTextSnippets}
+                  onClear={() => onSelectedTextSnippetsChange([])}
+                  onRemove={(snippetId) => onSelectedTextSnippetsChange(
+                    selectedTextSnippets.filter(snippet => snippet.id !== snippetId),
+                  )}
+                  onLocate={handleLocateSelectedText}
+                />
+              </div>
+            )}
             <textarea
               ref={inputRef}
               value={thread.draft}
@@ -462,12 +526,12 @@ const CoworkBtwFloatingPanel: React.FC<CoworkBtwFloatingPanelProps> = ({
             />
             <div className="flex items-center justify-between gap-2 px-3 pb-3 pt-1">
               <span className={`text-[10px] ${
-                normalizedDraftLength > COWORK_BTW_QUESTION_MAX_CHARS
+                normalizedComposerQuestionLength > COWORK_BTW_QUESTION_MAX_CHARS
                   ? 'text-danger'
                   : 'text-muted'
               }`}
               >
-                {normalizedDraftLength}/{COWORK_BTW_QUESTION_MAX_CHARS}
+                {normalizedComposerQuestionLength}/{COWORK_BTW_QUESTION_MAX_CHARS}
               </span>
               <button
                 type="button"

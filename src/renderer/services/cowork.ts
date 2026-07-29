@@ -21,6 +21,7 @@ import {
 } from '../../shared/cowork/constants';
 import { normalizeCoworkGoal } from '../../shared/cowork/goal';
 import type { CoworkMessageRailIndexItem } from '../../shared/cowork/rail';
+import type { CoworkSelectedTextSnippet } from '../../shared/cowork/selectedText';
 import {
   type CoworkSteerRequest,
   CoworkSteerStatus,
@@ -1054,7 +1055,10 @@ class CoworkService {
   }
 
   async submitBtw(
-    options: CoworkBtwSubmitRequest & { displayQuestion?: string },
+    options: CoworkBtwSubmitRequest & {
+      displayQuestion?: string;
+      selectedTextSnippets?: CoworkSelectedTextSnippet[];
+    },
   ): Promise<boolean> {
     const cowork = window.electron?.cowork;
     if (!cowork?.submitBtw || !cowork.onStreamBtwResult) {
@@ -1069,9 +1073,14 @@ class CoworkService {
     }
 
     const question = normalizeCoworkBtwQuestion(options.question);
-    const displayQuestion = normalizeCoworkBtwQuestion(
+    const selectedTextSnippets = (options.selectedTextSnippets ?? []).map(
+      snippet => ({ ...snippet }),
+    );
+    const normalizedDisplayQuestion = normalizeCoworkBtwQuestion(
       options.displayQuestion ?? options.question,
-    ) || question;
+    );
+    const displayQuestion = normalizedDisplayQuestion
+      || (selectedTextSnippets.length > 0 ? '' : question);
     if (!question) {
       return false;
     }
@@ -1104,6 +1113,7 @@ class CoworkService {
       runId: options.runId,
       sessionId: options.sessionId,
       question: displayQuestion,
+      ...(selectedTextSnippets.length > 0 ? { selectedTextSnippets } : {}),
       status: CoworkBtwStatus.Pending,
       createdAt,
     }));

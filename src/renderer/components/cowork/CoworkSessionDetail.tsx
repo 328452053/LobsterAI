@@ -12,6 +12,7 @@ import { useDispatch, useSelector } from 'react-redux';
 
 import { stripGoalCommandPrefixForDisplay } from '../../../common/sessionTitle';
 import {
+  buildCoworkBtwComposerQuestion,
   buildCoworkBtwContextualQuestion,
   COWORK_BTW_QUESTION_MAX_CHARS,
   createCoworkBtwRunId,
@@ -72,11 +73,12 @@ import {
 } from '../../store/slices/artifactSlice';
 import {
   addDraftSelectedTextSnippet,
-  clearBtwDraftIfUnchanged,
+  clearBtwComposerIfUnchanged,
   closeBtwThread,
   openBtwThread,
   PlanConfirmationState,
   setBtwDraft,
+  setBtwSelectedTextSnippets,
   setDraftCollaborationMode,
   setPlanConfirmationAwaiting,
   setPlanConfirmationHandled,
@@ -1785,24 +1787,45 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
 
   const handleOpenSelectedTextInSideChat = useCallback(() => {
     if (!selectedTextAction || !currentSession?.id) return;
-    const prefill = normalizeCoworkBtwQuestion(selectedTextAction.text);
     const sourceMessageId = selectedTextAction.sourceMessageId;
     const sessionId = currentSession.id;
+    const selectedTextSnippet: CoworkSelectedTextSnippet = {
+      id: `btw-selected-text-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      text: selectedTextAction.text,
+      sourceMessageId,
+      sourceMessageType: CoworkSelectedTextSource.AssistantMessage,
+      sourceId: sourceMessageId,
+      sourceType: CoworkSelectedTextSource.AssistantMessage,
+      createdAt: Date.now(),
+    };
+    const normalized = normalizeCoworkSelectedTextSnippets([selectedTextSnippet]);
     closeSelectedTextAction({ clearSelection: true });
-    if (!prefill) return;
+    if (!normalized.success) {
+      window.dispatchEvent(new CustomEvent('app:showToast', {
+        detail: i18nService.t(SELECTED_TEXT_ERROR_I18N_KEYS[normalized.error]),
+      }));
+      logDetailDiagnostic(
+        `rejected selected assistant text for side chat in session ${sessionId}; `
+        + `source is ${sourceMessageId}; reason=${normalized.error}`,
+      );
+      return;
+    }
 
-    dispatch(openBtwThread({ sessionId, prefill }));
+    dispatch(openBtwThread({
+      sessionId,
+      selectedTextSnippets: normalized.snippets,
+    }));
     reportConversationNavigationAction({
       actionType: 'selected_text_open_side_chat',
       params: {
         ...getConversationControlAnalyticsParams(),
         sourceType: CoworkSelectedTextSource.AssistantMessage,
-        selectedTextLengthBucket: bucketLength(prefill.length),
+        selectedTextLengthBucket: bucketLength(normalized.snippets[0].text.length),
       },
     });
     logDetailDiagnostic(
       `opened side chat from selected assistant text for session ${sessionId}; `
-      + `source is ${sourceMessageId}; characters=${prefill.length}`,
+      + `source is ${sourceMessageId}; characters=${normalized.snippets[0].text.length}`,
     );
   }, [
     closeSelectedTextAction,
@@ -1814,8 +1837,13 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
 
   const handleSubmitBtwDraft = useCallback(() => {
     if (!btwThread || !currentSession?.id) return;
+    const selectedTextSnippets = btwThread.selectedTextSnippets ?? [];
     const displayQuestion = normalizeCoworkBtwQuestion(btwThread.draft);
-    const normalizedQuestion = normalizeCoworkBtwSelectedTextQuestion(displayQuestion);
+    const composerQuestion = buildCoworkBtwComposerQuestion(
+      displayQuestion,
+      selectedTextSnippets,
+    );
+    const normalizedQuestion = normalizeCoworkBtwSelectedTextQuestion(composerQuestion);
     if (!normalizedQuestion) {
       window.dispatchEvent(new CustomEvent('app:showToast', {
         detail: i18nService.t('coworkBtwEmptyQuestion'),
@@ -1832,25 +1860,28 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
 
     const requestQuestion = buildCoworkBtwContextualQuestion(
       btwThread.entries,
-      displayQuestion,
+      composerQuestion,
     );
     const sessionId = currentSession.id;
     const runId = createCoworkBtwRunId();
     logDetailDiagnostic(
       `submitted side-chat draft for session ${sessionId}; run is ${runId}; `
       + `display characters=${displayQuestion.length}; request characters=${requestQuestion.length}; `
+      + `selected excerpts=${selectedTextSnippets.length}; `
       + `previous entries=${btwThread.entries.length}`,
     );
     void coworkService.submitBtw({
       sessionId,
       question: requestQuestion,
       displayQuestion,
+      selectedTextSnippets,
       runId,
     }).then((accepted) => {
       if (!accepted) return;
-      dispatch(clearBtwDraftIfUnchanged({
+      dispatch(clearBtwComposerIfUnchanged({
         sessionId,
         expectedDraft: btwThread.draft,
+        expectedSelectedTextSnippetIds: selectedTextSnippets.map(snippet => snippet.id),
       }));
     });
   }, [btwThread, currentSession?.id, dispatch]);
@@ -5399,6 +5430,13 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
                 sessionId: btwThread.sessionId,
                 draft,
               }))}
+              onSelectedTextSnippetsChange={snippets => dispatch(
+                setBtwSelectedTextSnippets({
+                  sessionId: btwThread.sessionId,
+                  snippets,
+                }),
+              )}
+              onLocateSelectedText={handleLocateSelectedText}
               onSubmit={handleSubmitBtwDraft}
               onStop={runId => void coworkService.abortBtw({
                 sessionId: btwThread.sessionId,

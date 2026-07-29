@@ -1597,6 +1597,7 @@ const translations: Record<LanguageType, Record<string, string>> = {
     coworkBtwWindowSubtitle: '临时对话，不会加入主对话记录',
     coworkBtwCloseWindow: '关闭侧边聊天',
     coworkBtwEmptyThread: '在下方输入问题，开始临时对话。',
+    coworkBtwEmptyThreadWithSelection: '已添加所选文本，可继续输入问题或直接发送。',
     coworkBtwInputPlaceholder: '输入你的问题…',
     coworkBtwSend: '发送侧边问题',
     coworkBtwStop: '停止回答',
@@ -4895,6 +4896,8 @@ const translations: Record<LanguageType, Record<string, string>> = {
     coworkBtwWindowSubtitle: 'Temporary and not added to the main conversation',
     coworkBtwCloseWindow: 'Close side chat',
     coworkBtwEmptyThread: 'Enter a question below to start a temporary conversation.',
+    coworkBtwEmptyThreadWithSelection:
+      'Selected text added. Ask a question or send it directly.',
     coworkBtwInputPlaceholder: 'Ask a question…',
     coworkBtwSend: 'Send side question',
     coworkBtwStop: 'Stop answer',
