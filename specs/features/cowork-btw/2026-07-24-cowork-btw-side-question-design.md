@@ -35,8 +35,9 @@ history, fail during an active turn, or complete without displaying the answer.
   falling back to the bottom-right corner when that anchor is unavailable,
   then allow dragging and resizing while keeping it inside the visible
   application viewport.
-- Let selected assistant text prefill an editable side-chat input without
-  sending until the user explicitly submits it.
+- Represent selected assistant text as a removable excerpt tag above the
+  editable side-chat input without sending until the user explicitly submits
+  it.
 - Let the user stop only the pending side-chat request without stopping or
   changing the main task.
 - Support continued side-chat questions by carrying a bounded window of recent
@@ -55,10 +56,11 @@ history, fail during an active turn, or complete without displaying the answer.
 - BTW is not a normal follow-up, queued follow-up, or same-turn steer.
 - BTW does not alter Plan mode, Goal mode, selected skills, selected kits, or
   the active working directory.
-- The first version does not attach structured selected-text snippet metadata,
-  attachments, browser annotations, media generation options, or voice input
-  to BTW questions. When submitted, selected text is sent only as plain
-  side-question text.
+- The first version does not extend the main/preload/runtime BTW contract with
+  structured selected-text metadata, attachments, browser annotations, media
+  generation options, or voice input. Renderer state keeps the excerpt
+  structured for display and re-editing, then formats it as bounded,
+  prompt-injection-safe quoted side-question text before IPC submission.
 - The first version does not persist BTW threads across renderer reloads or app
   restarts.
 - The side-chat window is not a durable or OpenClaw-native thread. Follow-up
@@ -137,9 +139,11 @@ when submitted from the normal composer.
   and are not consumed by the BTW submission.
 - Selecting assistant text shows an `Ask in side chat` action next to the
   existing `Add to chat` action. It opens the floating window and places the
-  selected excerpt in its input without sending. The user can edit it, add a
-  question, and submit explicitly. Opening from a new selection replaces any
-  unsent draft left by a previous selection instead of stacking excerpts.
+  selected excerpt in the same removable, expandable tag UI used by the main
+  composer while leaving the text input independently editable. The user can
+  add a question or submit the selected excerpt directly. Opening from a new
+  selection replaces the previous side-chat excerpt instead of stacking
+  excerpts and preserves any independently typed draft.
 
 The slash-command composer follows the pinned runtime's single-line command
 grammar and rejects multiline command input instead of falling through to
@@ -181,24 +185,28 @@ the normal message-list persistence model.
   especially in dark themes.
 - User question bubbles are right-aligned, shrink to short content, and are
   capped at 85% of the message-area width so short questions do not look like
-  full-width banners.
+  full-width banners. Submitted excerpt tags remain visible inside their
+  question bubbles.
 - Hovering or keyboard-focusing a question reveals the same copy and re-edit
-  actions used by the main conversation. Re-editing replaces the current side
-  draft, focuses the composer, and never mutates or resubmits the historical
-  exchange.
+  actions used by the main conversation. Re-editing restores both the submitted
+  excerpt tag and question draft, focuses the composer, and never mutates or
+  resubmits the historical exchange.
 - Hovering or keyboard-focusing an answered assistant message reveals the main
   conversation's copy action. Clipboard failures use the shared renderer
   fallback and diagnostic path.
-- The footer contains a multiline editable input. Enter submits and
-  Shift+Enter inserts a line break; the request is normalized to OpenClaw's
-  single-line command grammar only at submission.
+- The footer contains the shared selected-text tag UI above a multiline
+  editable input. The tag can be expanded, located, or removed. Enter submits
+  and Shift+Enter inserts a line break; a tag can be submitted without
+  additional input. The request is normalized to OpenClaw's single-line
+  command grammar only at submission.
 - While a side question is pending, the send action becomes a stop action.
   Stopping calls Gateway `chat.abort` with the exact side-question
   `sessionKey` and `runId`, records an ephemeral `stopped` result, and never
   calls the Cowork main-task `stopSession` path.
 - Closing hides the window but keeps its draft and exchanges in renderer
-  memory. Reopening without a new selection restores the draft until reload or
-  restart; opening from selected text replaces it with the new selection.
+  memory. Reopening without a new selection restores the draft and excerpt tag
+  until reload or restart; opening from selected text replaces only the
+  previous excerpt tag.
 
 Each session owns one temporary side-chat thread with multiple exchanges. Only
 one request per session may be pending. The user can send another question
@@ -248,6 +256,7 @@ export interface CoworkBtwEntry {
   runId: string;
   sessionId: string;
   question: string;
+  selectedTextSnippets?: CoworkSelectedTextSnippet[];
   status: CoworkBtwStatus;
   answer?: string;
   error?: string;
@@ -259,6 +268,7 @@ export interface CoworkBtwThread {
   sessionId: string;
   isOpen: boolean;
   draft: string;
+  selectedTextSnippets: CoworkSelectedTextSnippet[];
   entries: CoworkBtwEntry[];
   createdAt: number;
   updatedAt: number;
@@ -285,9 +295,10 @@ Primary integration points:
 - `CoworkService.submitBtw` inserts the pending entry, invokes preload, and
   handles immediate validation or transport failures.
 - `coworkSlice` stores one bounded ephemeral `CoworkBtwThread` per session,
-  including its draft and exchanges.
+  including its draft, selected-text tag, and exchanges.
 - `CoworkSessionDetail` opens the window from selected assistant text and
-  builds a bounded follow-up request from recent answered exchanges.
+  builds a bounded, prompt-injection-safe question from the excerpt, optional
+  draft, and recent answered exchanges.
 - `CoworkBtwFloatingPanel` owns viewport-safe drag/resize behavior and renders
   the temporary message list and editable input through a body portal.
 - `CoworkService` consumes `StreamBtwResult` and updates only the matching
@@ -430,8 +441,9 @@ remain authoritative.
 
 - Parser tests cover `/btw`, `/side`, case-insensitive aliases, empty questions,
   multiline rejection, and false positives.
-- Redux tests cover editable drafts, pending/answered/failed exchanges,
-  close/reopen behavior, session isolation, deletion, and memory bounds.
+- Redux tests cover editable drafts and selected-text tags,
+  pending/answered/failed exchanges, close/reopen behavior, stale async clear
+  protection, session isolation, deletion, and memory bounds.
 - Runtime tests verify:
   - idle-session BTW delivery;
   - BTW delivery while a main turn remains active;
@@ -458,7 +470,9 @@ remain authoritative.
     recovered into view after shrinking the application;
   - reload removes the temporary thread;
   - selecting assistant text shows both actions and the side-chat action does
-    not send until the editable side-chat input is submitted;
+    not send until the side-chat excerpt tag or editable input is submitted;
+  - the excerpt tag can be expanded, located, removed, sent without additional
+    text, and combined with an independently typed question;
   - a follow-up can refer to a prior side-chat answer without adding either
     exchange to the main history;
   - question copy/re-edit and answer copy actions match the main conversation;

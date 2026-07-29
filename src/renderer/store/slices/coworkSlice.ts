@@ -16,7 +16,10 @@ import {
   type CoworkMessageRailIndexItem,
   getCoworkRailPreview,
 } from '../../../shared/cowork/rail';
-import type { CoworkSelectedTextSnippet } from '../../../shared/cowork/selectedText';
+import {
+  type CoworkSelectedTextSnippet,
+  normalizeCoworkSelectedTextSnippets,
+} from '../../../shared/cowork/selectedText';
 import {
   type CoworkPendingSteer,
   CoworkSteerStatus,
@@ -684,7 +687,11 @@ const coworkSlice = createSlice({
 
     openBtwThread(
       state,
-      action: PayloadAction<{ sessionId: string; prefill?: string }>,
+      action: PayloadAction<{
+        sessionId: string;
+        prefill?: string;
+        selectedTextSnippets?: CoworkSelectedTextSnippet[];
+      }>,
     ) {
       const { sessionId } = action.payload;
       const sessionExists = state.currentSession?.id === sessionId
@@ -695,16 +702,26 @@ const coworkSlice = createSlice({
         sessionId,
         isOpen: true,
         draft: '',
+        selectedTextSnippets: [],
         entries: [],
         createdAt: now,
         updatedAt: now,
       };
       thread.isOpen = true;
+      thread.selectedTextSnippets ??= [];
       const prefill = stripNullChars(action.payload.prefill ?? '')
         .trim()
         .slice(0, COWORK_BTW_DRAFT_MAX_CHARS);
       if (prefill) {
         thread.draft = prefill;
+      }
+      if (action.payload.selectedTextSnippets !== undefined) {
+        const normalized = normalizeCoworkSelectedTextSnippets(
+          action.payload.selectedTextSnippets,
+        );
+        if (normalized.success) {
+          thread.selectedTextSnippets = normalized.snippets;
+        }
       }
       thread.updatedAt = now;
       state.btwThreadsBySessionId[sessionId] = thread;
@@ -729,6 +746,21 @@ const coworkSlice = createSlice({
       thread.updatedAt = Date.now();
     },
 
+    setBtwSelectedTextSnippets(
+      state,
+      action: PayloadAction<{
+        sessionId: string;
+        snippets: CoworkSelectedTextSnippet[];
+      }>,
+    ) {
+      const thread = state.btwThreadsBySessionId[action.payload.sessionId];
+      if (!thread) return;
+      const normalized = normalizeCoworkSelectedTextSnippets(action.payload.snippets);
+      if (!normalized.success) return;
+      thread.selectedTextSnippets = normalized.snippets;
+      thread.updatedAt = Date.now();
+    },
+
     clearBtwDraftIfUnchanged(
       state,
       action: PayloadAction<{ sessionId: string; expectedDraft: string }>,
@@ -736,6 +768,28 @@ const coworkSlice = createSlice({
       const thread = state.btwThreadsBySessionId[action.payload.sessionId];
       if (!thread || thread.draft !== action.payload.expectedDraft) return;
       thread.draft = '';
+      thread.updatedAt = Date.now();
+    },
+
+    clearBtwComposerIfUnchanged(
+      state,
+      action: PayloadAction<{
+        sessionId: string;
+        expectedDraft: string;
+        expectedSelectedTextSnippetIds: string[];
+      }>,
+    ) {
+      const thread = state.btwThreadsBySessionId[action.payload.sessionId];
+      if (!thread || thread.draft !== action.payload.expectedDraft) return;
+      const currentSnippetIds = (thread.selectedTextSnippets ?? []).map(snippet => snippet.id);
+      if (
+        currentSnippetIds.length !== action.payload.expectedSelectedTextSnippetIds.length
+        || currentSnippetIds.some(
+          (id, index) => id !== action.payload.expectedSelectedTextSnippetIds[index],
+        )
+      ) return;
+      thread.draft = '';
+      thread.selectedTextSnippets = [];
       thread.updatedAt = Date.now();
     },
 
@@ -749,6 +803,7 @@ const coworkSlice = createSlice({
         sessionId: entry.sessionId,
         isOpen: true,
         draft: '',
+        selectedTextSnippets: [],
         entries: [],
         createdAt: now,
         updatedAt: now,
@@ -782,6 +837,10 @@ const coworkSlice = createSlice({
 
       const getEntryChars = (candidate: CoworkBtwEntry): number => (
         candidate.question.length
+        + (candidate.selectedTextSnippets ?? []).reduce(
+          (total, snippet) => total + snippet.text.length,
+          0,
+        )
         + (candidate.answer?.length ?? 0)
         + (candidate.error?.length ?? 0)
       );
@@ -1267,7 +1326,9 @@ export const {
   openBtwThread,
   closeBtwThread,
   setBtwDraft,
+  setBtwSelectedTextSnippets,
   clearBtwDraftIfUnchanged,
+  clearBtwComposerIfUnchanged,
   appendBtwEntry,
   settleBtwEntry,
   deleteSession,

@@ -7,18 +7,23 @@ import {
   COWORK_BTW_THREAD_ENTRY_LIMIT,
   CoworkBtwStatus,
 } from '../../../shared/cowork/btw';
+import {
+  type CoworkSelectedTextSnippet,
+  CoworkSelectedTextSource,
+} from '../../../shared/cowork/selectedText';
 import { CoworkSessionStatusValue } from '../../types/cowork';
 import coworkReducer, {
   addMessage,
   addSession,
   appendBtwEntry,
-  clearBtwDraftIfUnchanged,
+  clearBtwComposerIfUnchanged,
   clearCurrentSession,
   closeBtwThread,
   deleteSession,
   finishSessionNavigation,
   openBtwThread,
   setBtwDraft,
+  setBtwSelectedTextSnippets,
   setConfig,
   setCurrentSession,
   setCurrentSessionId,
@@ -50,6 +55,19 @@ const makeSession = (overrides: Partial<Parameters<typeof addSession>[0]> = {}) 
   createdAt: 1,
   updatedAt: 1,
   ...overrides,
+});
+
+const makeSelectedTextSnippet = (
+  id: string,
+  text: string,
+): CoworkSelectedTextSnippet => ({
+  id,
+  text,
+  sourceMessageId: `message-${id}`,
+  sourceMessageType: CoworkSelectedTextSource.AssistantMessage,
+  sourceId: `message-${id}`,
+  sourceType: CoworkSelectedTextSource.AssistantMessage,
+  createdAt: 1,
 });
 
 test('defaults hidden OpenClaw session policy to thirty days', () => {
@@ -291,13 +309,15 @@ test('updateSessionGoal updates the current session and session summary', () => 
 test('keeps editable BTW side-chat threads ephemeral and session-scoped', () => {
   const session = makeSession({ updatedAt: 1234 });
   const initial = coworkReducer(undefined, addSession(session));
+  const firstSnippet = makeSelectedTextSnippet('selected-1', 'Selected assistant text');
   const opened = coworkReducer(initial, openBtwThread({
     sessionId: session.id,
-    prefill: 'Selected\nassistant text',
+    selectedTextSnippets: [firstSnippet],
   }));
   expect(opened.btwThreadsBySessionId[session.id]).toMatchObject({
     isOpen: true,
-    draft: 'Selected\nassistant text',
+    draft: '',
+    selectedTextSnippets: [firstSnippet],
     entries: [],
   });
 
@@ -311,23 +331,30 @@ test('keeps editable BTW side-chat threads ephemeral and session-scoped', () => 
   );
   expect(reopenedWithoutSelection.btwThreadsBySessionId[session.id]?.draft)
     .toBe('Unsent edited draft');
+  expect(reopenedWithoutSelection.btwThreadsBySessionId[session.id]?.selectedTextSnippets)
+    .toEqual([firstSnippet]);
+  const secondSnippet = makeSelectedTextSnippet('selected-2', 'New selected text');
   const reopenedFromSelection = coworkReducer(reopenedWithoutSelection, openBtwThread({
     sessionId: session.id,
-    prefill: 'New selected text',
+    selectedTextSnippets: [secondSnippet],
   }));
   expect(reopenedFromSelection.btwThreadsBySessionId[session.id]?.draft)
-    .toBe('New selected text');
+    .toBe('Unsent edited draft');
+  expect(reopenedFromSelection.btwThreadsBySessionId[session.id]?.selectedTextSnippets)
+    .toEqual([secondSnippet]);
 
   const pending = coworkReducer(reopenedFromSelection, appendBtwEntry({
     runId: 'btw-1',
     sessionId: session.id,
     question: 'What changed?',
+    selectedTextSnippets: [secondSnippet],
     status: CoworkBtwStatus.Pending,
     createdAt: 10,
   }));
 
   expect(pending.btwThreadsBySessionId[session.id]?.entries[0]).toMatchObject({
     question: 'What changed?',
+    selectedTextSnippets: [secondSnippet],
     status: CoworkBtwStatus.Pending,
   });
   expect(pending.currentSession?.messages).toEqual([]);
@@ -366,15 +393,33 @@ test('keeps editable BTW side-chat threads ephemeral and session-scoped', () => 
     sessionId: session.id,
     draft: 'Follow up',
   }));
-  const cleared = coworkReducer(edited, clearBtwDraftIfUnchanged({
+  const editedWithSnippet = coworkReducer(edited, setBtwSelectedTextSnippets({
+    sessionId: session.id,
+    snippets: [firstSnippet],
+  }));
+  const preservedAfterStaleClear = coworkReducer(
+    editedWithSnippet,
+    clearBtwComposerIfUnchanged({
+      sessionId: session.id,
+      expectedDraft: 'Follow up',
+      expectedSelectedTextSnippetIds: [secondSnippet.id],
+    }),
+  );
+  expect(preservedAfterStaleClear.btwThreadsBySessionId[session.id]).toMatchObject({
+    draft: 'Follow up',
+    selectedTextSnippets: [firstSnippet],
+  });
+  const cleared = coworkReducer(preservedAfterStaleClear, clearBtwComposerIfUnchanged({
     sessionId: session.id,
     expectedDraft: 'Follow up',
+    expectedSelectedTextSnippetIds: [firstSnippet.id],
   }));
   const closed = coworkReducer(cleared, closeBtwThread(session.id));
   const switchedAway = coworkReducer(closed, clearCurrentSession());
   expect(switchedAway.btwThreadsBySessionId[session.id]).toMatchObject({
     isOpen: false,
     draft: '',
+    selectedTextSnippets: [],
   });
   expect(switchedAway.btwThreadsBySessionId[session.id]?.entries[0].answer)
     .toBe('**Only docs.**');
