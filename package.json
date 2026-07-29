@@ -10,7 +10,6 @@
   "openclaw": {
     "version": "v2026.6.1",
     "repo": "https://github.com/openclaw/openclaw.git",
-    "runSafetyContract": "count-hardcaps-prompt-observe-v1",
     "plugins": [
       {
         "id": "dingtalk-connector",

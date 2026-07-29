@@ -61,9 +61,6 @@ import type { OpenClawEngineManager } from './openclawEngineManager';
 import { repairHeartbeatFile, stripProactiveHeartbeatSection } from './openclawHeartbeatRepair';
 import { getMainAgentWorkspacePath } from './openclawMemoryFile';
 import { resolveOpenClawCatalogModelMaxTokens } from './openclawModelCatalog';
-import {
-  cloneManagedOpenClawRunSafety,
-} from './openclawRunSafetyPolicy';
 
 const gwDiagTs = (): string => {
   const d = new Date();
@@ -296,13 +293,10 @@ const MANAGED_TOOL_LOOP_DETECTION = {
   unknownToolThreshold: 6,
   criticalThreshold: 10,
   globalCircuitBreakerThreshold: 16,
-  variantWarningThreshold: 2,
-  variantCriticalThreshold: 3,
   detectors: {
     genericRepeat: true,
     knownPollNoProgress: true,
     pingPong: true,
-    variantNoProgress: true,
   },
 } as const;
 const EMAIL_PLUGIN_ID = 'email';
@@ -1880,7 +1874,7 @@ export class OpenClawConfigSync {
       deny: [
         ...MANAGED_TOOL_DENY
       ],
-      loopDetection: MANAGED_TOOL_LOOP_DETECTION,
+loopDetection: MANAGED_TOOL_LOOP_DETECTION,
       web: {
         search: {
           enabled: false,
@@ -2256,7 +2250,6 @@ export class OpenClawConfigSync {
       agents: {
         defaults: {
           timeoutSeconds: OPENCLAW_AGENT_TIMEOUT_SECONDS,
-          runSafety: cloneManagedOpenClawRunSafety(),
           model: {
             primary: primaryModel,
           },
@@ -3881,11 +3874,6 @@ export class OpenClawConfigSync {
     const baseMinimalConfig: Record<string, unknown> = {
       gateway: {
         mode: 'local',
-      },
-      agents: {
-        defaults: {
-          runSafety: cloneManagedOpenClawRunSafety(),
-        },
       },
       // Don't enable plugins in minimal config — plugin loading via jiti happens
       // synchronously BEFORE the HTTP server binds, and can block gateway startup

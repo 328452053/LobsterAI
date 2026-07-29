@@ -5,10 +5,6 @@ import type {
   CoworkBtwAbortResponse,
   CoworkBtwSubmitResponse,
 } from '../../../shared/cowork/btw';
-import {
-  type CoworkStopResult,
-  CoworkStopStatus,
-} from '../../../shared/cowork/constants';
 import type { CoworkGoal } from '../../../shared/cowork/goal';
 import type { CoworkSteerResponse } from '../../../shared/cowork/steer';
 import type {
@@ -156,15 +152,6 @@ export class CoworkEngineRouter extends EventEmitter implements CoworkRuntime {
     this.runtime.stopSession(sessionId);
     this.sessionEngine.delete(sessionId);
     this.clearRequestEngineBySession(sessionId);
-  }
-
-  async abortSessionAndConfirm(sessionId: string): Promise<CoworkStopResult> {
-    const result = await this.runtime.abortSessionAndConfirm(sessionId);
-    if (result.status !== CoworkStopStatus.Failed) {
-      this.sessionEngine.delete(sessionId);
-      this.clearRequestEngineBySession(sessionId);
-    }
-    return result;
   }
 
   stopAllSessions(): void {

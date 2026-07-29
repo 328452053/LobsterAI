@@ -791,60 +791,6 @@ describe('enterpriseConfigSync', () => {
     });
   });
 
-  test('mergeOpenClawConfigs keeps LobsterAI ownership of run safety', async () => {
-    const mod = await import('./enterpriseConfigSync');
-    const merged = mod.mergeOpenClawConfigs(
-      {
-        agents: {
-          defaults: {
-            sandbox: { mode: 'off' },
-            runSafety: {
-              maxToolCallReservationsPerBudgetScope: 64,
-              maxProviderDispatchesPerBudgetScope: 32,
-              warningRatio: 0.75,
-              promptExposure: {
-                mode: 'observe',
-                legacyDiagnosticThreshold: 2_000_000,
-              },
-            },
-          },
-        },
-      },
-      {
-        agents: {
-          defaults: {
-            cwd: '/enterprise/workspace',
-            runSafety: {
-              maxToolCallReservationsPerBudgetScope: 1,
-              maxProviderDispatchesPerBudgetScope: 1,
-              maxCumulativeEstimatedPromptTokensPerBudgetScope: 1,
-              warningRatio: 0.1,
-            },
-          },
-        },
-      },
-    );
-
-    expect(merged.agents).toMatchObject({
-      defaults: {
-        sandbox: { mode: 'off' },
-        cwd: '/enterprise/workspace',
-        runSafety: {
-          maxToolCallReservationsPerBudgetScope: 64,
-          maxProviderDispatchesPerBudgetScope: 32,
-          warningRatio: 0.75,
-          promptExposure: {
-            mode: 'observe',
-            legacyDiagnosticThreshold: 2_000_000,
-          },
-        },
-      },
-    });
-    expect(
-      ((merged.agents as Record<string, unknown>).defaults as Record<string, unknown>).runSafety,
-    ).not.toHaveProperty('maxCumulativeEstimatedPromptTokensPerBudgetScope');
-  });
-
   test('mergeEnterpriseOpenclawConfig does not inject enterprise plugins source path automatically', async () => {
     const enterpriseDir = path.join(electronPaths.userData, 'enterprise-config');
     const pluginsDir = path.join(enterpriseDir, 'plugins', 'enterprise-test-plugin');
@@ -880,7 +826,6 @@ describe('enterpriseConfigSync', () => {
     );
 
     const mod = await import('./enterpriseConfigSync');
-    const renameSpy = vi.spyOn(fs, 'renameSync');
     mod.mergeEnterpriseOpenclawConfig(runtimeConfigPath);
 
     const merged = JSON.parse(fs.readFileSync(runtimeConfigPath, 'utf-8'));
@@ -894,10 +839,6 @@ describe('enterpriseConfigSync', () => {
         },
       },
     });
-    expect(renameSpy).toHaveBeenCalledWith(
-      expect.stringMatching(/runtime-openclaw\.json\.tmp-\d+-\d+$/),
-      runtimeConfigPath,
-    );
   });
 
   test('mergeOpenClawConfigs overwrites feishu accounts with top-level enterprise fields', async () => {

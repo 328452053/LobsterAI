@@ -29,11 +29,8 @@ import {
   COWORK_BTW_RESULT_MAX_CHARS,
   CoworkBtwStatus,
 } from '../../../shared/cowork/btw';
-import { CoworkStopStatus } from '../../../shared/cowork/constants';
-import { RunSafetyTerminationKind } from '../../../shared/cowork/runSafety';
 import { CoworkSelectedTextSource } from '../../../shared/cowork/selectedText';
 import { OpenClawTranscriptSafetyLimit } from '../../../shared/openclawTranscript/constants';
-import { t } from '../../i18n';
 import {
   __openClawTokenProxyTestUtils,
   consumeRecentOpenClawTokenProxyQuotaError,
@@ -3554,7 +3551,7 @@ function createActiveTurn(sessionId: string, sessionKey: string, runId: string) 
   };
 }
 
-test('incomplete plan mode output preserves the visible result without provider recovery', async () => {
+test('incomplete plan mode output requests one hidden completion retry', async () => {
   vi.useFakeTimers();
   try {
     const { session, store } = createReconcileStore([
@@ -3568,11 +3565,10 @@ test('incomplete plan mode output preserves the visible result without provider 
           messages: [{
             role: 'assistant',
             content: 'Workspace 是空的，新项目。设计方向明确。',
-          }
-          ],
+          }],
         };
       }
-      return {};
+      return { runId: 'run-plan-recovery-returned' };
     });
     adapter.gatewayClient = {
       start: () => {},
@@ -3594,40 +3590,35 @@ test('incomplete plan mode output preserves the visible result without provider 
       sessionKey,
       message: { role: 'assistant', content: turn.currentText },
     });
+    await Promise.resolve();
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(500);
     await finalPromise;
-    await vi.advanceTimersByTimeAsync(800);
 
-    expect(request.mock.calls.filter(([method]) => method === 'chat.send')).toHaveLength(0);
+    expect(request.mock.calls.filter(([method]) => method === 'chat.send')).toHaveLength(1);
+    expect(request).toHaveBeenCalledWith(
+      'chat.send',
+      expect.objectContaining({
+        sessionKey,
+        deliver: false,
+        message: expect.stringContaining('Plan Mode recovery instruction'),
+      }),
+      { timeoutMs: 90_000 },
+    );
     expect(turn.planModeRecoveryAttempted).toBe(true);
-    expect(turn.pendingOpenClawRetry).not.toBe(true);
-    expect(
-      session.messages.some(
-        message =>
-          message.type === 'assistant' &&
-          message.content.includes('Workspace 是空的，新项目。设计方向明确。'),
-      ),
-    ).toBe(true);
-    expect(
-      session.messages.filter(
-        message => message.type === 'system' && message.content === t('taskPlanIncomplete'),
-      ),
-    ).toHaveLength(1);
-    expect(session.status).toBe('completed');
-    expect(adapter.activeTurns.has(session.id)).toBe(false);
-
-    adapter.addIncompletePlanModeHint(session.id, turn, '仍然只有一句前言。');
-    expect(request.mock.calls.filter(([method]) => method === 'chat.send')).toHaveLength(0);
-    expect(
-      session.messages.filter(
-        message => message.type === 'system' && message.content === t('taskPlanIncomplete'),
-      ),
-    ).toHaveLength(1);
+    expect(turn.pendingOpenClawRetry).toBe(true);
+    await expect(adapter.retryIncompletePlanModeResponse(
+      session.id,
+      turn,
+      '仍然只有一句前言。',
+    )).resolves.toBe(false);
+    expect(request.mock.calls.filter(([method]) => method === 'chat.send')).toHaveLength(1);
   } finally {
     vi.useRealTimers();
   }
 });
 
-test('incomplete tagged plan final completes without an automatic continuation', async () => {
+test('incomplete final after plan recovery waits for the automatic continuation', async () => {
   vi.useFakeTimers();
   try {
     const { session, store } = createReconcileStore([
@@ -3635,22 +3626,20 @@ test('incomplete tagged plan final completes without an automatic continuation',
     ]);
     session.status = 'running';
     const adapter = new OpenClawRuntimeAdapter(store, {});
-    const request = vi.fn(async () => ({
-      messages: [
-        {
-          role: 'assistant',
-          content: '<proposed_plan>\n## Summary\n- Draft',
-        },
-      ],
-    }));
     adapter.gatewayClient = {
       start: () => {},
       stop: () => {},
-      request,
+      request: vi.fn(async () => ({
+        messages: [{
+          role: 'assistant',
+          content: '<proposed_plan>\n## Summary\n- Draft',
+        }],
+      })),
     };
     const sessionKey = `agent:main:lobsterai:${session.id}`;
     const turn = createActiveTurn(session.id, sessionKey, 'run-plan-recovery');
     turn.planMode = true;
+    turn.planModeRecoveryAttempted = true;
     adapter.activeTurns.set(session.id, turn);
     adapter.latestTurnTokenBySession.set(session.id, turn.turnToken);
 
@@ -3658,27 +3647,19 @@ test('incomplete tagged plan final completes without an automatic continuation',
       state: 'final',
       runId: 'run-plan-recovery',
       sessionKey,
-      message: { role: 'assistant',
-        content: [{ type: 'thinking', thinking: 'Writing the plan.' }],
-      },
+      message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'Writing the plan.' }] },
     });
-    await vi.advanceTimersByTimeAsync(800);
 
-    expect(request.mock.calls.filter(([method]) => method === 'chat.send')).toHaveLength(0);
-    expect(turn.pendingOpenClawRetry).not.toBe(true);
-    expect(turn.pendingVisibleFinalContinuation).not.toBe(true);
-    expect(
-      session.messages.some(
-        message => message.type === 'system' && message.content === t('taskPlanIncomplete'),
-      ),
-    ).toBe(true);
-    expect(session.status).toBe('completed');
+    expect(turn.pendingOpenClawRetry).toBe(true);
+    expect(turn.pendingVisibleFinalContinuation).toBe(true);
+    expect(turn.finalCompletionFlushOnLifecycleEnd).toBe(false);
+    expect(session.status).toBe('running');
   } finally {
     vi.useRealTimers();
   }
 });
 
-test('deferred incomplete plan completion backfills the complete plan from history', async () => {
+test('deferred plan recovery completion backfills the complete plan from history', async () => {
   const incompletePlan = '<proposed_plan>\n## Summary\n- Color and';
   const completePlan = [
     '<proposed_plan>',
@@ -3777,18 +3758,19 @@ test('plan mode does not request completion while a tool-use boundary is active'
   expect(session.status).toBe('running');
 });
 
-test('local incomplete-plan hint leaves the original turn state untouched', () => {
+test('failed plan mode recovery restores the original turn state', async () => {
+  vi.useFakeTimers();
+  try {
     const { session, store } = createReconcileStore([
       { id: 'msg-1', type: 'user', content: 'plan a bakery website', timestamp: 1, metadata: {} },
     ]);
     const adapter = new OpenClawRuntimeAdapter(store, {});
-  const request = vi.fn(async () => {
-    throw new Error('unexpected provider request');
-  });
     adapter.gatewayClient = {
       start: () => {},
       stop: () => {},
-    request,
+      request: vi.fn(async () => {
+        throw new Error('session busy');
+      }),
     };
     const sessionKey = `agent:main:lobsterai:${session.id}`;
     const turn = createActiveTurn(session.id, sessionKey, 'run-plan-original');
@@ -3798,19 +3780,22 @@ test('local incomplete-plan hint leaves the original turn state untouched', () =
     adapter.activeTurns.set(session.id, turn);
     adapter.sessionIdByRunId.set('run-plan-original', session.id);
 
-  adapter.addIncompletePlanModeHint(session.id, turn, turn.currentText);
+    const recoveryPromise = adapter.retryIncompletePlanModeResponse(
+      session.id,
+      turn,
+      turn.currentText,
+    );
+    await vi.advanceTimersByTimeAsync(500);
 
-  expect(request).not.toHaveBeenCalled();
+    await expect(recoveryPromise).resolves.toBe(false);
     expect(turn.runId).toBe('run-plan-original');
     expect(turn.currentText).toBe('计划生成前言。');
     expect(turn.currentAssistantSegmentText).toBe('计划生成前言。');
-  expect(turn.pendingRecoverableFollowup).not.toBe(true);
-  expect(turn.pendingOpenClawRetry).not.toBe(true);
-  expect(
-    session.messages.some(
-      message => message.type === 'system' && message.content === t('taskPlanIncomplete'),
-    ),
-  ).toBe(true);
+    expect(turn.pendingRecoverableFollowup).toBe(false);
+    expect(turn.pendingOpenClawRetry).toBe(false);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test('stopSession finalizes streamed assistant metadata with the active model', () => {
@@ -3869,963 +3854,6 @@ test('stopSession finalizes streamed assistant metadata with the active model', 
     runId: 'run-stop',
   });
   expect(session.status).toBe('idle');
-});
-
-test('abortSessionAndConfirm aborts an active turn by exact session key and run id', async () => {
-  const { session, store } = createReconcileStore([]);
-  session.status = 'running';
-  const adapter = new OpenClawRuntimeAdapter(store, {});
-  const request = vi.fn(async () => ({ aborted: true }));
-  adapter.gatewayClient = {
-    start: () => {},
-    stop: () => {},
-    request,
-  };
-  const sessionKey = `agent:main:lobsterai:${session.id}`;
-  adapter.activeTurns.set(
-    session.id,
-    createActiveTurn(session.id, sessionKey, 'run-confirmed-stop'),
-  );
-
-  await expect(adapter.abortSessionAndConfirm(session.id)).resolves.toEqual({
-    status: CoworkStopStatus.Aborted,
-  });
-
-  expect(request).toHaveBeenCalledWith(
-    'chat.abort',
-    {
-      sessionKey,
-      runId: 'run-confirmed-stop',
-    },
-    { timeoutMs: 5_000 },
-  );
-  expect(adapter.activeTurns.has(session.id)).toBe(false);
-  expect(session.status).toBe('idle');
-});
-
-test('abortSessionAndConfirm returns already_idle only after gateway resync confirms idle', async () => {
-  const { session, store } = createReconcileStore([]);
-  session.status = 'running';
-  const adapter = new OpenClawRuntimeAdapter(store, {});
-  const sessionKey = `agent:main:lobsterai:${session.id}`;
-  const request = vi.fn(async (method: string) => {
-    if (method === 'chat.abort') {
-      return { aborted: false };
-    }
-    return {
-      sessions: [
-        {
-          key: sessionKey,
-          hasActiveRun: false,
-        },
-      ],
-    };
-  });
-  adapter.gatewayClient = {
-    start: () => {},
-    stop: () => {},
-    request,
-  };
-  adapter.activeTurns.set(session.id, createActiveTurn(session.id, sessionKey, 'run-already-idle'));
-
-  await expect(adapter.abortSessionAndConfirm(session.id)).resolves.toEqual({
-    status: CoworkStopStatus.AlreadyIdle,
-  });
-
-  expect(request).toHaveBeenNthCalledWith(
-    2,
-    'sessions.list',
-    {
-      search: sessionKey,
-      limit: 20,
-    },
-    { timeoutMs: 5_000 },
-  );
-  expect(adapter.activeTurns.has(session.id)).toBe(false);
-  expect(session.status).toBe('idle');
-});
-
-test('abortSessionAndConfirm preserves running state when the gateway still reports an active run', async () => {
-  const { session, store } = createReconcileStore([]);
-  session.status = 'running';
-  const adapter = new OpenClawRuntimeAdapter(store, {});
-  const sessionStopped = vi.fn();
-  adapter.on('sessionStopped', sessionStopped);
-  const sessionKey = `agent:main:lobsterai:${session.id}`;
-  adapter.gatewayClient = {
-    start: () => {},
-    stop: () => {},
-    request: vi.fn(async (method: string) => {
-      if (method === 'chat.abort') {
-        return { aborted: false };
-      }
-      return {
-        sessions: [
-          {
-            key: sessionKey,
-            hasActiveRun: true,
-            status: 'running',
-          },
-        ],
-      };
-    }),
-  };
-  adapter.activeTurns.set(
-    session.id,
-    createActiveTurn(session.id, sessionKey, 'run-still-running'),
-  );
-
-  const result = await adapter.abortSessionAndConfirm(session.id);
-
-  expect(result).toEqual({
-    status: CoworkStopStatus.Failed,
-    error: 'OpenClaw Gateway did not confirm that the session stopped.',
-  });
-  expect(adapter.activeTurns.has(session.id)).toBe(true);
-  expect(session.status).toBe('running');
-  expect(sessionStopped).not.toHaveBeenCalled();
-});
-
-test('abortSessionAndConfirm does not trust a stale terminal row status over an active run', async () => {
-  const { session, store } = createReconcileStore([]);
-  session.status = 'running';
-  const adapter = new OpenClawRuntimeAdapter(store, {});
-  const sessionKey = `agent:main:lobsterai:${session.id}`;
-  adapter.gatewayClient = {
-    start: () => {},
-    stop: () => {},
-    request: vi.fn(async (method: string) => {
-      if (method === 'chat.abort') {
-        return { aborted: false };
-      }
-      return {
-        sessions: [
-          {
-            key: sessionKey,
-            hasActiveRun: true,
-            status: 'done',
-          },
-        ],
-      };
-    }),
-  };
-  adapter.activeTurns.set(
-    session.id,
-    createActiveTurn(session.id, sessionKey, 'run-stale-terminal-status'),
-  );
-
-  await expect(adapter.abortSessionAndConfirm(session.id)).resolves.toEqual({
-    status: CoworkStopStatus.Failed,
-    error: 'OpenClaw Gateway did not confirm that the session stopped.',
-  });
-
-  expect(adapter.activeTurns.has(session.id)).toBe(true);
-  expect(session.status).toBe('running');
-});
-
-test('an agent lifecycle end alone does not confirm an in-flight stop', async () => {
-  vi.useFakeTimers();
-  try {
-    const { session, store } = createReconcileStore([]);
-    session.status = 'running';
-    const adapter = new OpenClawRuntimeAdapter(store, {});
-    const sessionKey = `agent:main:lobsterai:${session.id}`;
-    const turn = createActiveTurn(session.id, sessionKey, 'run-lifecycle-end');
-    adapter.activeTurns.set(session.id, turn);
-    let resolveAbort: ((value: { aborted: boolean }) => void) | undefined;
-    adapter.gatewayClient = {
-      start: () => {},
-      stop: () => {},
-      request: vi.fn((method: string) => {
-        if (method === 'chat.abort') {
-          return new Promise<{ aborted: boolean }>(resolve => {
-            resolveAbort = resolve;
-          });
-        }
-        return Promise.resolve({
-          sessions: [
-            {
-              key: sessionKey,
-              hasActiveRun: true,
-              status: 'running',
-            },
-          ],
-        });
-      }),
-    };
-
-    const stopPromise = adapter.abortSessionAndConfirm(session.id);
-    adapter.handleAgentLifecycleEvent(session.id, { phase: 'end' }, turn.runId);
-    resolveAbort?.({ aborted: false });
-
-    await expect(stopPromise).resolves.toEqual({
-      status: CoworkStopStatus.Failed,
-      error: 'OpenClaw Gateway did not confirm that the session stopped.',
-    });
-    expect(adapter.activeTurns.has(session.id)).toBe(true);
-    expect(session.status).toBe('running');
-  } finally {
-    vi.clearAllTimers();
-    vi.useRealTimers();
-  }
-});
-
-test('abortSessionAndConfirm preserves running state when the abort RPC fails', async () => {
-  const { session, store } = createReconcileStore([]);
-  session.status = 'running';
-  const adapter = new OpenClawRuntimeAdapter(store, {});
-  const sessionKey = `agent:main:lobsterai:${session.id}`;
-  adapter.gatewayClient = {
-    start: () => {},
-    stop: () => {},
-    request: vi.fn(async () => {
-      throw new Error('abort timeout');
-    }),
-  };
-  adapter.activeTurns.set(
-    session.id,
-    createActiveTurn(session.id, sessionKey, 'run-abort-timeout'),
-  );
-
-  await expect(adapter.abortSessionAndConfirm(session.id)).resolves.toEqual({
-    status: CoworkStopStatus.Failed,
-    error: 'abort timeout',
-  });
-
-  expect(adapter.activeTurns.has(session.id)).toBe(true);
-  expect(session.status).toBe('running');
-});
-
-test('abortSessionAndConfirm uses native lifecycle evidence without a local ActiveTurn', async () => {
-  const sessionKey = 'agent:main:feishu:dm:ou_confirmed_stop';
-  const { session, store } = createReconcileStore([]);
-  session.status = 'running';
-  const adapter = new OpenClawRuntimeAdapter(store, {});
-  const request = vi.fn(async () => ({ aborted: true }));
-  adapter.gatewayClient = {
-    start: () => {},
-    stop: () => {},
-    request,
-  };
-  adapter.rememberSessionKey(session.id, sessionKey);
-  adapter.channelLifecycleRunBySessionKey.set(sessionKey, {
-    runId: 'native-run-stop',
-    observedAtMs: Date.now(),
-  });
-  adapter.channelSessionSync = {
-    isCurrentBindingKey: () => true,
-    resolveOrCreateSession: () => session.id,
-  };
-
-  await expect(adapter.abortSessionAndConfirm(session.id)).resolves.toEqual({
-    status: CoworkStopStatus.Aborted,
-  });
-
-  expect(request).toHaveBeenCalledWith(
-    'chat.abort',
-    {
-      sessionKey,
-      runId: 'native-run-stop',
-    },
-    { timeoutMs: 5_000 },
-  );
-  expect(session.status).toBe('idle');
-  expect(adapter.channelLifecycleRunBySessionKey.has(sessionKey)).toBe(false);
-
-  adapter.handleGatewayEvent({
-    event: 'sessions.changed',
-    payload: {
-      sessionKey,
-      runId: 'native-run-stop',
-      phase: 'start',
-      status: 'running',
-    },
-  });
-  expect(session.status).toBe('idle');
-});
-
-test('abortSessionAndConfirm resolves a native session key from the persisted channel mapping', async () => {
-  const sessionKey = 'agent:main:feishu:dm:ou_persisted_confirmed_stop';
-  const { session, store } = createReconcileStore([]);
-  session.status = 'running';
-  const adapter = new OpenClawRuntimeAdapter(store, {});
-  const request = vi.fn(async () => ({ aborted: true }));
-  adapter.gatewayClient = {
-    start: () => {},
-    stop: () => {},
-    request,
-  };
-  adapter.channelSessionSync = {
-    getOpenClawSessionKeyForCoworkSession: () => ({
-      isChannelSession: true,
-      sessionKey,
-    }),
-  };
-
-  await expect(adapter.abortSessionAndConfirm(session.id)).resolves.toEqual({
-    status: CoworkStopStatus.Aborted,
-  });
-
-  expect(request).toHaveBeenCalledWith('chat.abort', { sessionKey }, { timeoutMs: 5_000 });
-  expect(session.status).toBe('idle');
-});
-
-test('abortSessionAndConfirm falls back to a session-key-only abort when running evidence has no run id', async () => {
-  const sessionKey = 'agent:main:feishu:dm:ou_session_key_stop';
-  const { session, store } = createReconcileStore([]);
-  session.status = 'running';
-  const adapter = new OpenClawRuntimeAdapter(store, {});
-  const request = vi.fn(async () => ({ aborted: true }));
-  adapter.gatewayClient = {
-    start: () => {},
-    stop: () => {},
-    request,
-  };
-  adapter.rememberSessionKey(session.id, sessionKey);
-  adapter.channelSessionSync = {
-    isCurrentBindingKey: () => true,
-    resolveOrCreateSession: () => session.id,
-  };
-
-  await expect(adapter.abortSessionAndConfirm(session.id)).resolves.toEqual({
-    status: CoworkStopStatus.Aborted,
-  });
-
-  expect(request).toHaveBeenCalledWith('chat.abort', { sessionKey }, { timeoutMs: 5_000 });
-  expect(session.status).toBe('idle');
-
-  adapter.handleGatewayEvent({
-    event: 'sessions.changed',
-    payload: {
-      sessionKey,
-      runId: 'late-session-key-only-run',
-      phase: 'start',
-      status: 'running',
-    },
-  });
-  expect(session.status).toBe('idle');
-  expect(adapter.channelLifecycleRunBySessionKey.has(sessionKey)).toBe(false);
-});
-
-test('abortSessionAndConfirm preserves a newer native lifecycle marker before local cleanup', async () => {
-  const sessionKey = 'agent:main:feishu:dm:ou_newer_run';
-  const { session, store } = createReconcileStore([]);
-  session.status = 'running';
-  const adapter = new OpenClawRuntimeAdapter(store, {});
-  let resolveAbort: ((value: { aborted: boolean }) => void) | undefined;
-  adapter.gatewayClient = {
-    start: () => {},
-    stop: () => {},
-    request: vi.fn(
-      () =>
-        new Promise<{ aborted: boolean }>(resolve => {
-          resolveAbort = resolve;
-        }),
-    ),
-  };
-  adapter.rememberSessionKey(session.id, sessionKey);
-  adapter.channelSessionSync = {
-    isCurrentBindingKey: () => true,
-    resolveOrCreateSession: () => session.id,
-  };
-
-  const stopPromise = adapter.abortSessionAndConfirm(session.id);
-  adapter.handleGatewayEvent({
-    event: 'sessions.changed',
-    payload: {
-      sessionKey,
-      runId: 'newer-native-run',
-      phase: 'start',
-      status: 'running',
-    },
-  });
-  resolveAbort?.({ aborted: true });
-
-  await expect(stopPromise).resolves.toEqual({
-    status: CoworkStopStatus.Failed,
-    error: 'A newer session run started before stop confirmation completed.',
-  });
-  expect(session.status).toBe('running');
-  expect(adapter.channelLifecycleRunBySessionKey.get(sessionKey)?.runId).toBe('newer-native-run');
-});
-
-test('abortSessionAndConfirm rejects an old confirmation after a newer turn already finished', async () => {
-  const { session, store } = createReconcileStore([]);
-  session.status = 'running';
-  const adapter = new OpenClawRuntimeAdapter(store, {});
-  const sessionStopped = vi.fn();
-  adapter.on('sessionStopped', sessionStopped);
-  const sessionKey = `agent:main:lobsterai:${session.id}`;
-  const oldTurn = createActiveTurn(session.id, sessionKey, 'run-old-stop');
-  adapter.activeTurns.set(session.id, oldTurn);
-  adapter.latestTurnTokenBySession.set(session.id, oldTurn.turnToken);
-  let resolveAbort: ((value: { aborted: boolean }) => void) | undefined;
-  adapter.gatewayClient = {
-    start: () => {},
-    stop: () => {},
-    request: vi.fn(
-      () =>
-        new Promise<{ aborted: boolean }>(resolve => {
-          resolveAbort = resolve;
-        }),
-    ),
-  };
-
-  const stopPromise = adapter.abortSessionAndConfirm(session.id);
-  const newerTurn = createActiveTurn(session.id, sessionKey, 'run-newer');
-  newerTurn.turnToken = oldTurn.turnToken + 1;
-  adapter.activeTurns.set(session.id, newerTurn);
-  adapter.latestTurnTokenBySession.set(session.id, newerTurn.turnToken);
-  adapter.cleanupSessionTurn(session.id);
-  session.status = 'completed';
-  resolveAbort?.({ aborted: true });
-
-  await expect(stopPromise).resolves.toEqual({
-    status: CoworkStopStatus.Failed,
-    error: 'A newer session run started before stop confirmation completed.',
-  });
-  expect(session.status).toBe('completed');
-  expect(sessionStopped).not.toHaveBeenCalled();
-});
-
-test('abortSessionAndConfirm returns already_idle without an RPC when no running evidence exists', async () => {
-  const { session, store } = createReconcileStore([]);
-  const adapter = new OpenClawRuntimeAdapter(store, {});
-  const request = vi.fn();
-  adapter.gatewayClient = {
-    start: () => {},
-    stop: () => {},
-    request,
-  };
-
-  await expect(adapter.abortSessionAndConfirm(session.id)).resolves.toEqual({
-    status: CoworkStopStatus.AlreadyIdle,
-  });
-
-  expect(request).not.toHaveBeenCalled();
-  expect(session.status).toBe('idle');
-});
-
-test('a gateway aborted event confirms an in-flight stop without premature local cleanup', async () => {
-  const { session, store } = createReconcileStore([]);
-  session.status = 'running';
-  const adapter = new OpenClawRuntimeAdapter(store, {});
-  const sessionKey = `agent:main:lobsterai:${session.id}`;
-  const turn = createActiveTurn(session.id, sessionKey, 'run-aborted-event');
-  adapter.activeTurns.set(session.id, turn);
-  let resolveAbort: ((value: { aborted: boolean }) => void) | undefined;
-  adapter.gatewayClient = {
-    start: () => {},
-    stop: () => {},
-    request: vi.fn(
-      () =>
-        new Promise<{ aborted: boolean }>(resolve => {
-          resolveAbort = resolve;
-        }),
-    ),
-  };
-
-  const stopPromise = adapter.abortSessionAndConfirm(session.id);
-  adapter.handleChatAborted(session.id, turn, turn.runId);
-
-  expect(adapter.activeTurns.has(session.id)).toBe(true);
-  expect(session.status).toBe('running');
-
-  resolveAbort?.({ aborted: false });
-  await expect(stopPromise).resolves.toEqual({
-    status: CoworkStopStatus.Aborted,
-  });
-  expect(adapter.activeTurns.has(session.id)).toBe(false);
-  expect(session.status).toBe('idle');
-});
-
-test('a stale aborted event cannot confirm a stop for a newer active run', async () => {
-  const { session, store } = createReconcileStore([]);
-  session.status = 'running';
-  const adapter = new OpenClawRuntimeAdapter(store, {});
-  const sessionKey = `agent:main:lobsterai:${session.id}`;
-  const turn = createActiveTurn(session.id, sessionKey, 'new-run');
-  turn.knownRunIds.add('old-run');
-  adapter.activeTurns.set(session.id, turn);
-  adapter.rememberSessionKey(session.id, sessionKey);
-  adapter.sessionIdByRunId.set('old-run', session.id);
-  let resolveAbort: ((value: { aborted: boolean }) => void) | undefined;
-  adapter.gatewayClient = {
-    start: () => {},
-    stop: () => {},
-    request: vi.fn((method: string) => {
-      if (method === 'chat.abort') {
-        return new Promise<{ aborted: boolean }>(resolve => {
-          resolveAbort = resolve;
-        });
-      }
-      return Promise.resolve({
-        sessions: [
-          {
-            key: sessionKey,
-            hasActiveRun: true,
-            status: 'running',
-          },
-        ],
-      });
-    }),
-  };
-
-  const stopPromise = adapter.abortSessionAndConfirm(session.id);
-  adapter.handleGatewayEvent({
-    event: 'chat',
-    payload: {
-      sessionKey,
-      runId: 'old-run',
-      state: 'aborted',
-    },
-  });
-  resolveAbort?.({ aborted: false });
-
-  await expect(stopPromise).resolves.toEqual({
-    status: CoworkStopStatus.Failed,
-    error: 'OpenClaw Gateway did not confirm that the session stopped.',
-  });
-  expect(adapter.activeTurns.get(session.id)).toBe(turn);
-  expect(session.status).toBe('running');
-});
-
-const createRunSafetyTermination = (
-  kind: (typeof RunSafetyTerminationKind)[keyof typeof RunSafetyTerminationKind],
-  options: {
-    rootInvocationId?: string;
-    budgetScopeId?: string;
-    runId?: string;
-  } = {},
-) => ({
-  kind,
-  rootInvocationId: options.rootInvocationId ?? 'root-safety',
-  ...(kind === RunSafetyTerminationKind.RunBudgetIdentityMissing
-    ? {}
-    : { budgetScopeId: options.budgetScopeId ?? 'scope-safety' }),
-  runId: options.runId ?? 'run-safety',
-});
-
-const createRunSafetyAdapter = (
-  options: {
-    sessionId?: string;
-    rootInvocationId?: string;
-    budgetScopeId?: string;
-    runId?: string;
-    messages?: Array<Record<string, unknown>>;
-  } = {},
-) => {
-  const runId = options.runId ?? 'run-safety';
-  const rootInvocationId = options.rootInvocationId ?? 'root-safety';
-  const budgetScopeId = options.budgetScopeId ?? 'scope-safety';
-  const { session, store } = createReconcileStore(options.messages ?? [], {
-    sessionId: options.sessionId,
-  });
-  session.status = 'running';
-  const adapter = new OpenClawRuntimeAdapter(store, {});
-  const sessionKey = `agent:main:lobsterai:${session.id}`;
-  const turn = createActiveTurn(session.id, sessionKey, runId);
-  turn.rootInvocationId = rootInvocationId;
-  turn.budgetScopeId = budgetScopeId;
-  adapter.activeTurns.set(session.id, turn);
-  adapter.rememberSessionKey(session.id, sessionKey);
-  adapter.sessionIdByRunId.set(runId, session.id);
-  return { adapter, session, sessionKey, turn };
-};
-
-const dispatchRunSafetyLifecycle = (
-  adapter: OpenClawRuntimeAdapter,
-  options: {
-    sessionKey: string;
-    phase: 'end' | 'error';
-    terminationReason: ReturnType<typeof createRunSafetyTermination>;
-    eventRunId?: string;
-  },
-) => {
-  adapter.handleGatewayEvent({
-    event: 'agent',
-    payload: {
-      sessionKey: options.sessionKey,
-      runId: options.eventRunId ?? options.terminationReason.runId,
-      stream: 'lifecycle',
-      data: {
-        phase: options.phase,
-        terminationReason: options.terminationReason,
-      },
-    },
-  });
-};
-
-test('all seven run-safety kinds produce distinct deterministic system messages', () => {
-  const contents = new Set<string>();
-  for (const [index, kind] of Object.values(RunSafetyTerminationKind).entries()) {
-    const runId = `run-safety-${index}`;
-    const rootInvocationId = `root-safety-${index}`;
-    const budgetScopeId = `scope-safety-${index}`;
-    const { adapter, session, sessionKey } = createRunSafetyAdapter({
-      sessionId: `session-safety-${index}`,
-      rootInvocationId,
-      budgetScopeId,
-      runId,
-    });
-    const errorSpy = vi.fn();
-    adapter.on('error', errorSpy);
-    const terminationReason = createRunSafetyTermination(kind, {
-      rootInvocationId,
-      budgetScopeId,
-      runId,
-    });
-
-    dispatchRunSafetyLifecycle(adapter, {
-      sessionKey,
-      phase: 'end',
-      terminationReason,
-    });
-
-    const safetyMessages = session.messages.filter(
-      message => message.type === 'system' && message.metadata?.runSafetyTermination === true,
-    );
-    expect(safetyMessages).toHaveLength(1);
-    expect(safetyMessages[0].metadata).toMatchObject({
-      kind,
-      rootInvocationId,
-      runId,
-    });
-    if (kind === RunSafetyTerminationKind.RunBudgetIdentityMissing) {
-      expect(safetyMessages[0].metadata?.budgetScopeId).toBeUndefined();
-    } else {
-      expect(safetyMessages[0].metadata?.budgetScopeId).toBe(budgetScopeId);
-    }
-    expect(safetyMessages[0].content).not.toContain('充值');
-    contents.add(safetyMessages[0].content);
-    expect(session.status).toBe('completed');
-    expect(adapter.activeTurns.has(session.id)).toBe(false);
-    expect(errorSpy).not.toHaveBeenCalled();
-  }
-  expect(contents.size).toBe(Object.values(RunSafetyTerminationKind).length);
-});
-
-test('duplicate safety terminals from root and child run ids write and complete once', () => {
-  const { adapter, session, sessionKey } = createRunSafetyAdapter();
-  const completeSpy = vi.fn();
-  adapter.on('complete', completeSpy);
-
-  dispatchRunSafetyLifecycle(adapter, {
-    sessionKey,
-    phase: 'end',
-    eventRunId: 'run-root',
-    terminationReason: createRunSafetyTermination(RunSafetyTerminationKind.VariantNoProgress),
-  });
-  dispatchRunSafetyLifecycle(adapter, {
-    sessionKey,
-    phase: 'error',
-    terminationReason: createRunSafetyTermination(RunSafetyTerminationKind.VariantNoProgress, {
-      runId: 'run-safety-child',
-    }),
-  });
-
-  expect(
-    session.messages.filter(message => message.metadata?.runSafetyTermination === true),
-  ).toHaveLength(1);
-  expect(completeSpy).toHaveBeenCalledTimes(1);
-  expect(session.status).toBe('completed');
-});
-
-test('a child run safety terminal inherits the root lifecycle scope identity', () => {
-  const { adapter, session, sessionKey, turn } = createRunSafetyAdapter({
-    rootInvocationId: 'temporary-root',
-    budgetScopeId: 'temporary-scope',
-    runId: 'run-root',
-  });
-  turn.rootInvocationId = undefined;
-  turn.budgetScopeId = undefined;
-
-  adapter.handleGatewayEvent({
-    event: 'agent',
-    payload: {
-      sessionKey,
-      runId: 'run-root',
-      stream: 'lifecycle',
-      data: {
-        phase: 'start',
-        rootInvocationId: 'root-inherited',
-        budgetScopeId: 'scope-inherited',
-      },
-    },
-  });
-  expect(turn.rootInvocationId).toBe('root-inherited');
-  expect(turn.budgetScopeId).toBe('scope-inherited');
-
-  dispatchRunSafetyLifecycle(adapter, {
-    sessionKey,
-    phase: 'end',
-    eventRunId: 'run-root',
-    terminationReason: createRunSafetyTermination(RunSafetyTerminationKind.RunToolBudget, {
-      rootInvocationId: 'root-inherited',
-      budgetScopeId: 'scope-inherited',
-      runId: 'run-child',
-    }),
-  });
-
-  expect(
-    session.messages.filter(message => message.metadata?.runSafetyTermination === true),
-  ).toHaveLength(1);
-  expect(session.status).toBe('completed');
-  expect(adapter.activeTurns.has(session.id)).toBe(false);
-});
-
-test.each(['end', 'error'] as const)(
-  'run-safety lifecycle phase=%s normalizes to a successful local terminal',
-  phase => {
-    const { adapter, session, sessionKey } = createRunSafetyAdapter({
-      sessionId: `session-safety-${phase}`,
-      rootInvocationId: `root-safety-${phase}`,
-      budgetScopeId: `scope-safety-${phase}`,
-      runId: `run-safety-${phase}`,
-    });
-    const errorSpy = vi.fn();
-    adapter.on('error', errorSpy);
-
-    dispatchRunSafetyLifecycle(adapter, {
-      sessionKey,
-      phase,
-      terminationReason: createRunSafetyTermination(
-        RunSafetyTerminationKind.RunProviderDispatchBudget,
-        {
-          rootInvocationId: `root-safety-${phase}`,
-          budgetScopeId: `scope-safety-${phase}`,
-          runId: `run-safety-${phase}`,
-        },
-      ),
-    });
-
-    expect(session.status).toBe('completed');
-    expect(errorSpy).not.toHaveBeenCalled();
-    expect(adapter.terminatedRunIds.has(`run-safety-${phase}`)).toBe(false);
-  },
-);
-
-test('a safety terminal from an older scope cannot stop a newer active run', () => {
-  const { adapter, session, sessionKey, turn } = createRunSafetyAdapter({
-    rootInvocationId: 'root-new',
-    budgetScopeId: 'scope-new',
-    runId: 'run-new',
-  });
-  const errorSpy = vi.fn();
-  adapter.on('error', errorSpy);
-
-  dispatchRunSafetyLifecycle(adapter, {
-    sessionKey,
-    phase: 'error',
-    terminationReason: createRunSafetyTermination(RunSafetyTerminationKind.RunToolBudget, {
-      rootInvocationId: 'root-old',
-      budgetScopeId: 'scope-old',
-      runId: 'run-old',
-    }),
-  });
-
-  expect(adapter.activeTurns.get(session.id)).toBe(turn);
-  expect(turn.knownRunIds.has('run-old')).toBe(false);
-  expect(session.status).toBe('running');
-  expect(session.messages.some(message => message.metadata?.runSafetyTermination === true)).toBe(
-    false,
-  );
-  expect(errorSpy).not.toHaveBeenCalled();
-});
-
-test('an unscoped agent safety terminal without an envelope run id is rejected', () => {
-  const { session, store } = createReconcileStore([]);
-  session.status = 'running';
-  const adapter = new OpenClawRuntimeAdapter(store, {});
-  const sessionKey = `agent:main:lobsterai:${session.id}`;
-  adapter.rememberSessionKey(session.id, sessionKey);
-
-  adapter.handleGatewayEvent({
-    event: 'agent',
-    payload: {
-      sessionKey,
-      stream: 'lifecycle',
-      data: {
-        phase: 'end',
-        terminationReason: createRunSafetyTermination(RunSafetyTerminationKind.RunToolBudget, {
-          rootInvocationId: 'root-old',
-          budgetScopeId: 'scope-old',
-          runId: 'run-old',
-        }),
-      },
-    },
-  });
-
-  expect(session.status).toBe('running');
-  expect(session.messages.some(message => message.metadata?.runSafetyTermination === true)).toBe(
-    false,
-  );
-});
-
-test('an unscoped channel safety terminal without an envelope run id is rejected', () => {
-  const sessionKey = 'agent:main:feishu:dm:ou_stale_run_safety';
-  const { session, store } = createReconcileStore([]);
-  session.status = 'running';
-  const adapter = new OpenClawRuntimeAdapter(store, {});
-  adapter.channelSessionSync = {
-    isCurrentBindingKey: () => true,
-    resolveOrCreateSession: () => session.id,
-  };
-
-  adapter.handleGatewayEvent({
-    event: 'sessions.changed',
-    payload: {
-      sessionKey,
-      phase: 'error',
-      status: 'error',
-      terminationReason: createRunSafetyTermination(RunSafetyTerminationKind.RunToolBudget, {
-        rootInvocationId: 'root-old',
-        budgetScopeId: 'scope-old',
-        runId: 'run-old',
-      }),
-    },
-  });
-
-  expect(session.status).toBe('running');
-  expect(session.messages.some(message => message.metadata?.runSafetyTermination === true)).toBe(
-    false,
-  );
-});
-
-test('legacy receive-only prompt exposure terminal cancels recovery without retry', async () => {
-  vi.useFakeTimers();
-  try {
-    const { adapter, session, sessionKey, turn } = createRunSafetyAdapter();
-    const timerCallback = vi.fn();
-    const request = vi.fn(async () => ({}));
-    const errorSpy = vi.fn();
-    adapter.on('error', errorSpy);
-    adapter.gatewayClient = {
-      start: () => {},
-      stop: () => {},
-      request,
-    };
-    turn.planMode = true;
-    turn.planModeSafetyRecoveryPending = true;
-    turn.pendingRecoverableFollowup = true;
-    turn.pendingOpenClawRetry = true;
-    turn.lifecycleEndFallbackTimer = setTimeout(timerCallback, 1);
-    turn.finalCompletionTimer = setTimeout(timerCallback, 1);
-    adapter.pendingGoalContinuations.set(session.id, {
-      action: 'continue',
-      prompt: 'automatic continuation must not run',
-      skipInitialUserMessage: true,
-    });
-
-    dispatchRunSafetyLifecycle(adapter, {
-      sessionKey,
-      phase: 'error',
-      terminationReason: createRunSafetyTermination(
-        RunSafetyTerminationKind.RunPromptExposureBudget,
-      ),
-    });
-    await vi.runAllTimersAsync();
-
-    expect(timerCallback).not.toHaveBeenCalled();
-    expect(request).not.toHaveBeenCalled();
-    expect(errorSpy).not.toHaveBeenCalled();
-    expect(adapter.pendingGoalContinuations.has(session.id)).toBe(false);
-    expect(session.status).toBe('completed');
-  } finally {
-    vi.clearAllTimers();
-    vi.useRealTimers();
-  }
-});
-
-test('persisted legacy prompt-estimate terminal deduplicates after adapter restart', () => {
-  const terminationReason = createRunSafetyTermination(
-    RunSafetyTerminationKind.RunPromptEstimateUnavailable,
-  );
-  const persistedMessage = {
-    id: 'persisted-safety',
-    type: 'system',
-    content: 'persisted deterministic safety message',
-    timestamp: 1,
-    metadata: {
-      runSafetyTermination: true,
-      ...terminationReason,
-    },
-  };
-  const { session, store } = createReconcileStore([persistedMessage]);
-  session.status = 'running';
-  const adapter = new OpenClawRuntimeAdapter(store, {});
-  const sessionKey = `agent:main:lobsterai:${session.id}`;
-  adapter.rememberSessionKey(session.id, sessionKey);
-  const completeSpy = vi.fn();
-  adapter.on('complete', completeSpy);
-
-  dispatchRunSafetyLifecycle(adapter, {
-    sessionKey,
-    phase: 'end',
-    terminationReason,
-  });
-
-  expect(
-    session.messages.filter(message => message.metadata?.runSafetyTermination === true),
-  ).toHaveLength(1);
-  expect(session.status).toBe('completed');
-  expect(completeSpy).toHaveBeenCalledTimes(1);
-});
-
-test('native session lifecycle delivers the same run-safety terminal contract', () => {
-  const sessionKey = 'agent:main:feishu:dm:ou_run_safety';
-  const terminationReason = createRunSafetyTermination(
-    RunSafetyTerminationKind.RunSafetyStateUnavailable,
-  );
-  const { session, store } = createReconcileStore([]);
-  session.status = 'running';
-  const adapter = new OpenClawRuntimeAdapter(store, {});
-  adapter.channelSessionSync = {
-    isCurrentBindingKey: () => true,
-    resolveOrCreateSession: () => session.id,
-  };
-  adapter.sessionIdByRunId.set(terminationReason.runId, session.id);
-  adapter.lastAgentSeqByRunId.set(terminationReason.runId, 7);
-  adapter.pendingAgentEventsByRunId.set(terminationReason.runId, [
-    {
-      runId: terminationReason.runId,
-      sessionKey,
-      stream: 'lifecycle',
-      data: { phase: 'start' },
-    },
-  ]);
-
-  adapter.handleGatewayEvent({
-    event: 'sessions.changed',
-    payload: {
-      sessionKey,
-      runId: terminationReason.runId,
-      phase: 'error',
-      status: 'error',
-      terminationReason,
-    },
-  });
-
-  expect(session.status).toBe('completed');
-  expect(
-    session.messages.filter(message => message.metadata?.runSafetyTermination === true),
-  ).toHaveLength(1);
-  expect(adapter.recentlyClosedRunIds.has(terminationReason.runId)).toBe(true);
-  expect(adapter.sessionIdByRunId.has(terminationReason.runId)).toBe(false);
-  expect(adapter.lastAgentSeqByRunId.has(terminationReason.runId)).toBe(false);
-  expect(adapter.pendingAgentEventsByRunId.has(terminationReason.runId)).toBe(false);
-
-  adapter.handleGatewayEvent({
-    event: 'sessions.changed',
-    payload: {
-    sessionKey,
-      runId: terminationReason.runId,
-      phase: 'start',
-      status: 'running',
-    },
-  });
-
-  expect(session.status).toBe('completed');
 });
 
 test('reconcileWithHistory: already in sync — skips replace', async () => {
@@ -8222,56 +7250,46 @@ test('ordinary write tool does not trigger memory maintenance handling', async (
   }, 1);
 
   expect(maintenanceSpy).not.toHaveBeenCalled();
-  expect(session.messages.find((message) => message.type === 'tool_use')?.metadata?.toolName).toBe('write'
-  );
+  expect(session.messages.find((message) => message.type === 'tool_use')?.metadata?.toolName).toBe('write');
 });
 
-test('blocked plan mode mutation completes locally after lifecycle end without provider recovery', async () => {
-  const preface = 'Now let me read the workspace to understand the project structure.';
-  const { session, store } = createReconcileStore([
-    { id: 'msg-1', type: 'user', content: 'plan a bakery website', timestamp: 1, metadata: {} },
-    {
-      id: 'msg-2',
-      type: 'assistant',
-      content: preface,
-      timestamp: 2,
-      metadata: { isStreaming: true, isFinal: false },
-    },
-  ]);
-  session.status = 'running';
-  const adapter = new OpenClawRuntimeAdapter(store, {});
-  const completeSpy = vi.fn();
-  const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
-  const sessionKey = `agent:main:lobsterai:${session.id}`;
-  const turn = createActiveTurn(session.id, sessionKey, 'run-plan-unsafe');
-  turn.planMode = true;
-  turn.assistantMessageId = 'msg-2';
-  turn.currentText = preface;
-  turn.currentAssistantSegmentText = preface;
-  turn.agentAssistantTextLength = preface.length;
+test('blocked plan mode mutation waits for lifecycle end before safety recovery', async () => {
+  vi.useFakeTimers();
+  try {
+    const preface = 'Now let me read the workspace to understand the project structure.';
+    const { session, store } = createReconcileStore([
+      { id: 'msg-1', type: 'user', content: 'plan a bakery website', timestamp: 1, metadata: {} },
+      {
+        id: 'msg-2',
+        type: 'assistant',
+        content: preface,
+        timestamp: 2,
+        metadata: { isStreaming: true, isFinal: false },
+      },
+    ]);
+    session.status = 'running';
+    const adapter = new OpenClawRuntimeAdapter(store, {});
+    const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
+    const sessionKey = `agent:main:lobsterai:${session.id}`;
+    const turn = createActiveTurn(session.id, sessionKey, 'run-plan-unsafe');
+    turn.planMode = true;
+    turn.assistantMessageId = 'msg-2';
+    turn.currentText = preface;
+    turn.currentAssistantSegmentText = preface;
+    turn.agentAssistantTextLength = preface.length;
 
-  adapter.gatewayClient = {
-    start: () => {},
-    stop: () => {},
-    request: async (method: string, params?: unknown) => {
-      requests.push({ method, params: params as Record<string, unknown> });
-      if (method === 'chat.abort') {
-        return { aborted: false };
-      }
-      if (method === 'sessions.list') {
-        return {
-          sessions: [{ key: sessionKey, status: 'running', hasActiveRun: true }],
-        };
-      }
-      return {};
-    },
-  };
-  adapter.on('complete', completeSpy);
-  adapter.activeTurns.set(session.id, turn);
-  adapter.sessionIdByRunId.set('run-plan-unsafe', session.id);
+    adapter.gatewayClient = {
+      start: () => {},
+      stop: () => {},
+      request: async (method: string, params?: unknown) => {
+        requests.push({ method, params: params as Record<string, unknown> });
+        return method === 'chat.send' ? { runId: 'run-plan-safe-recovery' } : {};
+      },
+    };
+    adapter.activeTurns.set(session.id, turn);
+    adapter.sessionIdByRunId.set('run-plan-unsafe', session.id);
 
-  adapter.handleAgentEvent(
-    {
+    adapter.handleAgentEvent({
       runId: 'run-plan-unsafe',
       sessionKey,
       stream: 'tool',
@@ -8281,532 +7299,99 @@ test('blocked plan mode mutation completes locally after lifecycle end without p
         name: 'exec',
         args: { command: 'mkdir -p /tmp/mcbakery' },
       },
-    },
-    1,
-  );
+    }, 1);
+    await Promise.resolve();
 
-  await vi.waitFor(() => {
-    expect(requests.some(request => request.method === 'sessions.list')).toBe(true);
-  });
-  expect(turn.planModeSafetyRecoveryPending).toBe(true);
-  expect(turn.planModeRecoveryAttempted).toBe(true);
-  expect(session.status).toBe('running');
-  expect(adapter.activeTurns.get(session.id)).toBe(turn);
-  expect(session.messages.some(message => message.type === 'system')).toBe(false);
+    expect(requests.find((request) => request.method === 'chat.abort')?.params).toEqual({
+      sessionKey,
+      runId: 'run-plan-unsafe',
+    });
+    expect(turn.planModeSafetyRecoveryPending).toBe(true);
+    expect(turn.planModeRecoveryAttempted).toBe(true);
+    expect(session.status).toBe('running');
+    expect(session.messages.some((message) => message.type === 'system')).toBe(false);
 
-  adapter.handleAgentEvent(
-    {
+    adapter.handleChatEvent({
+      state: 'aborted',
+      runId: 'run-plan-unsafe',
+      sessionKey,
+      stopReason: 'abort',
+    }, 2);
+    await Promise.resolve();
+
+    expect(requests.some((request) => request.method === 'chat.send')).toBe(false);
+
+    adapter.handleAgentEvent({
       runId: 'run-plan-unsafe',
       sessionKey,
       stream: 'lifecycle',
       data: { phase: 'end', aborted: true },
-    },
-    2,
-  );
+    }, 3);
+    await vi.advanceTimersByTimeAsync(1499);
+    expect(requests.some((request) => request.method === 'chat.send')).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
 
-  expect(requests.filter(request => request.method === 'chat.send')).toHaveLength(0);
-  expect(turn.planModeSafetyRecoveryPending).toBe(false);
-  expect(turn.knownRunIds).toEqual(new Set(['run-plan-unsafe']));
-  expect(session.status).toBe('completed');
-  expect(adapter.activeTurns.has(session.id)).toBe(false);
-  expect(completeSpy).toHaveBeenCalledWith(session.id, 'run-plan-unsafe');
-  expect(session.messages.some(message => message.metadata?.isTimeout)).toBe(false);
-  expect(session.messages.find(message => message.id === 'msg-2')).toMatchObject({
-    content: preface,
-    metadata: { isStreaming: false, isFinal: true },
-  });
-  expect(
-    session.messages.filter(
-      message => message.type === 'system' && message.content === t('taskPlanMutationBlocked'),
-    ),
-  ).toHaveLength(1);
-  expect(session.messages.some(message => message.metadata?.runSafetyTermination === true)).toBe(
-    false,
-  );
+    const recoveryRequest = requests.find((request) => request.method === 'chat.send');
+    expect(recoveryRequest?.params).toMatchObject({
+      sessionKey,
+      deliver: false,
+      message: expect.stringContaining('Plan Mode safety recovery instruction'),
+    });
+    expect(recoveryRequest?.params.message).toContain('Do not call any tools');
+    expect(turn.planModeSafetyRecoveryPending).toBe(false);
+    expect(turn.knownRunIds.has('run-plan-safe-recovery')).toBe(true);
+    expect(session.status).toBe('running');
+    expect(session.messages.some((message) => message.metadata?.isTimeout)).toBe(false);
+
+    const recoveredPlan = '<proposed_plan>\n## Summary\n- Build the bakery page.\n</proposed_plan>';
+    adapter.processAgentAssistantText({
+      runId: 'run-plan-safe-recovery',
+      sessionKey,
+      stream: 'assistant',
+      data: { text: recoveredPlan },
+    });
+
+    expect(session.messages.find((message) => message.id === 'msg-2')?.content).toBe(recoveredPlan);
+    expect(session.messages.some((message) => message.content === preface)).toBe(false);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
-test('an aborted false response with a still-running resync keeps the blocked plan turn running', async () => {
-  const preface = 'I found the relevant files.';
-  const { session, store } = createReconcileStore([
-    { id: 'msg-1', type: 'user', content: 'plan the change', timestamp: 1, metadata: {} },
-    {
-      id: 'msg-2',
-      type: 'assistant',
-      content: preface,
-      timestamp: 2,
-      metadata: { isStreaming: true, isFinal: false },
-    },
-  ]);
-  session.status = 'running';
-  const adapter = new OpenClawRuntimeAdapter(store, {});
-  const sessionKey = `agent:main:lobsterai:${session.id}`;
-  const request = vi.fn(async (method: string) => {
-    if (method === 'chat.abort') {
-      return { aborted: false };
-    }
-    if (method === 'sessions.list') {
-      return {
-        sessions: [{ key: sessionKey, status: 'running', hasActiveRun: true }],
-      };
-    }
-    return {};
-  });
-  const turn = createActiveTurn(session.id, sessionKey, 'run-plan-no-terminal');
-  turn.planMode = true;
-  turn.assistantMessageId = 'msg-2';
-  turn.currentText = preface;
-  turn.currentAssistantSegmentText = preface;
-  adapter.gatewayClient = { start: () => {}, stop: () => {}, request };
-  adapter.activeTurns.set(session.id, turn);
-
-  adapter.handleAgentEvent(
-    {
-      runId: turn.runId,
-      sessionKey,
-      stream: 'tool',
-      data: {
-        toolCallId: 'call-no-terminal-write',
-        phase: 'start',
-        name: 'write',
-        args: { path: '/tmp/index.html' },
-      },
-    },
-    1,
-  );
-
-  await vi.waitFor(() => {
-    expect(request.mock.calls.some(([method]) => method === 'sessions.list')).toBe(true);
-  });
-  expect(request).toHaveBeenCalledWith(
-    'chat.abort',
-    {
-      sessionKey,
-      runId: turn.runId,
-    },
-    { timeoutMs: 5_000 },
-  );
-  expect(request.mock.calls.filter(([method]) => method === 'chat.send')).toHaveLength(0);
-  expect(session.status).toBe('running');
-  expect(adapter.activeTurns.get(session.id)).toBe(turn);
-  expect(turn.planModeSafetyRecoveryPending).toBe(true);
-  expect(session.messages.find(message => message.id === 'msg-2')).toMatchObject({
-    content: preface,
-    metadata: { isStreaming: true, isFinal: false },
-  });
-  expect(
-    session.messages.some(
-      message => message.type === 'system' && message.content === t('taskPlanMutationBlocked'),
-    ),
-  ).toBe(false);
-});
-
-test('an aborted false response completes only after resync confirms the session is idle', async () => {
-  const { session, store } = createReconcileStore([
-    { id: 'msg-1', type: 'user', content: 'plan the change', timestamp: 1, metadata: {} },
-  ]);
-  session.status = 'running';
-  const adapter = new OpenClawRuntimeAdapter(store, {});
-  const sessionKey = `agent:main:lobsterai:${session.id}`;
-  const request = vi.fn(async (method: string) => {
-    if (method === 'chat.abort') {
-      return { aborted: false };
-    }
-    if (method === 'sessions.list') {
-      return {
-        sessions: [{ key: sessionKey, status: 'idle', hasActiveRun: false }],
-      };
-    }
-    return {};
-  });
-  const turn = createActiveTurn(session.id, sessionKey, 'run-plan-resynced-idle');
-  turn.planMode = true;
-  adapter.gatewayClient = { start: () => {}, stop: () => {}, request };
-  adapter.activeTurns.set(session.id, turn);
-
-  adapter.handleAgentEvent(
-    {
-      runId: turn.runId,
-      sessionKey,
-      stream: 'tool',
-      data: {
-        toolCallId: 'call-resynced-write',
-        phase: 'start',
-        name: 'write',
-        args: { path: '/tmp/index.html' },
-      },
-    },
-    1,
-  );
-
-  await vi.waitFor(() => {
-    expect(session.status).toBe('completed');
-  });
-  expect(request.mock.calls.map(([method]) => method)).toEqual(['chat.abort', 'sessions.list']);
-  expect(adapter.activeTurns.has(session.id)).toBe(false);
-  expect(
-    session.messages.filter(
-      message => message.type === 'system' && message.content === t('taskPlanMutationBlocked'),
-    ),
-  ).toHaveLength(1);
-});
-
-test('an aborted true response completes the blocked plan turn without another provider request', async () => {
-  const { session, store } = createReconcileStore([
-    { id: 'msg-1', type: 'user', content: 'plan the change', timestamp: 1, metadata: {} },
-  ]);
-  session.status = 'running';
-  const adapter = new OpenClawRuntimeAdapter(store, {});
-  const request = vi.fn(async (method: string) =>
-    method === 'chat.abort' ? { aborted: true } : {},
-  );
-  const sessionKey = `agent:main:lobsterai:${session.id}`;
-  const turn = createActiveTurn(session.id, sessionKey, 'run-plan-aborted-true');
-  turn.planMode = true;
-  adapter.gatewayClient = { start: () => {}, stop: () => {}, request };
-  adapter.activeTurns.set(session.id, turn);
-
-  adapter.handleAgentEvent(
-    {
-      runId: turn.runId,
-      sessionKey,
-      stream: 'tool',
-      data: {
-        toolCallId: 'call-confirmed-write',
-        phase: 'start',
-        name: 'write',
-        args: { path: '/tmp/index.html' },
-      },
-    },
-    1,
-  );
-
-  await vi.waitFor(() => {
-    expect(session.status).toBe('completed');
-  });
-  expect(request.mock.calls.map(([method]) => method)).toEqual(['chat.abort']);
-  expect(adapter.activeTurns.has(session.id)).toBe(false);
-  expect(
-    session.messages.filter(
-      message => message.type === 'system' && message.content === t('taskPlanMutationBlocked'),
-    ),
-  ).toHaveLength(1);
-});
-
-test('rejected plan safety abort remains visible and running until a matching lifecycle terminal', async () => {
-  const preface = 'I found the relevant files.';
-  const { session, store } = createReconcileStore([
-    { id: 'msg-1', type: 'user', content: 'plan the change', timestamp: 1, metadata: {} },
-    {
-      id: 'msg-2',
-      type: 'assistant',
-      content: preface,
-      timestamp: 2,
-      metadata: { isStreaming: true, isFinal: false },
-    },
-  ]);
-  session.status = 'running';
-  const adapter = new OpenClawRuntimeAdapter(store, {});
-  const request = vi.fn(async (method: string) => {
-    if (method === 'chat.abort') {
-      throw new Error('gateway disconnected');
-    }
-    return {};
-  });
-  const sessionKey = `agent:main:lobsterai:${session.id}`;
-  const turn = createActiveTurn(session.id, sessionKey, 'run-plan-abort-failed');
-  turn.planMode = true;
-  turn.assistantMessageId = 'msg-2';
-  turn.currentText = preface;
-  turn.currentAssistantSegmentText = preface;
-  adapter.gatewayClient = { start: () => {}, stop: () => {}, request };
-  adapter.activeTurns.set(session.id, turn);
-
-  adapter.handleAgentEvent(
-    {
-      runId: turn.runId,
-      sessionKey,
-      stream: 'tool',
-      data: {
-        toolCallId: 'call-failed-abort-write',
-        phase: 'start',
-        name: 'write',
-        args: { path: '/tmp/index.html' },
-      },
-    },
-    1,
-  );
-
-  await vi.waitFor(() => {
-    expect(request).toHaveBeenCalled();
-  });
-  expect(request).toHaveBeenCalledWith(
-    'chat.abort',
-    {
-      sessionKey,
-      runId: turn.runId,
-    },
-    { timeoutMs: 5_000 },
-  );
-  expect(request.mock.calls.every(([method]) => method === 'chat.abort')).toBe(true);
-  expect(request.mock.calls.filter(([method]) => method === 'chat.send')).toHaveLength(0);
-  expect(session.status).toBe('running');
-  expect(adapter.activeTurns.get(session.id)).toBe(turn);
-  expect(turn.planModeSafetyRecoveryPending).toBe(true);
-  expect(session.messages.find(message => message.id === 'msg-2')).toMatchObject({
-    content: preface,
-    metadata: { isStreaming: true, isFinal: false },
-  });
-  expect(
-    session.messages.some(
-      message => message.type === 'system' && message.content === t('taskPlanMutationBlocked'),
-    ),
-  ).toBe(false);
-
-  adapter.handleAgentLifecycleEvent(
-    session.id,
-    { phase: 'end', runId: turn.runId, aborted: true },
-    undefined,
-  );
-
-  expect(session.status).toBe('completed');
-  expect(adapter.activeTurns.has(session.id)).toBe(false);
-  expect(
-    session.messages.filter(
-      message => message.type === 'system' && message.content === t('taskPlanMutationBlocked'),
-    ),
-  ).toHaveLength(1);
-});
-
-test('timed out plan safety abort keeps the current turn running and visible', async () => {
-  const preface = 'Still preparing the plan.';
-  const { session, store } = createReconcileStore([
-    {
-      id: 'msg-2',
-      type: 'assistant',
-      content: preface,
-      timestamp: 2,
-      metadata: { isStreaming: true, isFinal: false },
-    },
-  ]);
-  session.status = 'running';
-  const adapter = new OpenClawRuntimeAdapter(store, {});
-  const timeoutError = Object.assign(new Error('chat.abort timed out'), {
-    code: 'REQUEST_TIMEOUT',
-  });
-  const request = vi.fn(async () => {
-    throw timeoutError;
-  });
-  const sessionKey = `agent:main:lobsterai:${session.id}`;
-  const turn = createActiveTurn(session.id, sessionKey, 'run-plan-abort-timeout');
-  turn.planMode = true;
-  turn.assistantMessageId = 'msg-2';
-  turn.currentText = preface;
-  turn.currentAssistantSegmentText = preface;
-  adapter.gatewayClient = { start: () => {}, stop: () => {}, request };
-  adapter.activeTurns.set(session.id, turn);
-
-  adapter.handleAgentEvent(
-    {
-      runId: turn.runId,
-      sessionKey,
-      stream: 'tool',
-      data: {
-        toolCallId: 'call-timeout-write',
-        phase: 'start',
-        name: 'write',
-        args: { path: '/tmp/index.html' },
-      },
-    },
-    1,
-  );
-
-  await vi.waitFor(() => {
-    expect(request).toHaveBeenCalled();
-  });
-  expect(request.mock.calls.filter(([method]) => method === 'chat.send')).toHaveLength(0);
-  expect(session.status).toBe('running');
-  expect(adapter.activeTurns.get(session.id)).toBe(turn);
-  expect(turn.planModeSafetyRecoveryPending).toBe(true);
-  expect(session.messages.find(message => message.id === 'msg-2')).toMatchObject({
-    metadata: { isStreaming: true, isFinal: false },
-  });
-  expect(
-    session.messages.some(
-      message => message.type === 'system' && message.content === t('taskPlanMutationBlocked'),
-    ),
-  ).toBe(false);
-});
-
-test('late aborted true response for a stale blocked turn cannot close a newer turn', async () => {
+test('repeated blocked mutation in one plan turn stops instead of looping recovery', async () => {
   const { session, store } = createReconcileStore([
     { id: 'msg-1', type: 'user', content: 'plan a bakery website', timestamp: 1, metadata: {} },
   ]);
   session.status = 'running';
   const adapter = new OpenClawRuntimeAdapter(store, {});
-  let resolveAbort: ((value: { aborted: boolean }) => void) | undefined;
-  const request = vi.fn(
-    () =>
-      new Promise<{ aborted: boolean }>(resolve => {
-        resolveAbort = resolve;
-      }),
-  );
+  const request = vi.fn(async () => ({}));
   const sessionKey = `agent:main:lobsterai:${session.id}`;
-  const oldTurn = createActiveTurn(session.id, sessionKey, 'run-plan-old');
-  oldTurn.planMode = true;
-  adapter.gatewayClient = { start: () => {}, stop: () => {}, request };
-  adapter.activeTurns.set(session.id, oldTurn);
-
-  adapter.handleAgentEvent(
-    {
-      runId: oldTurn.runId,
-      sessionKey,
-      stream: 'tool',
-      data: {
-        toolCallId: 'call-old-write',
-        phase: 'start',
-        name: 'write',
-        args: { path: '/tmp/index.html' },
-      },
-    },
-    1,
-  );
-  await vi.waitFor(() => {
-    expect(request).toHaveBeenCalled();
-  });
-
-  const newTurn = createActiveTurn(session.id, sessionKey, 'run-plan-new');
-  newTurn.turnToken = 2;
-  adapter.activeTurns.set(session.id, newTurn);
-  adapter.latestTurnTokenBySession.set(session.id, newTurn.turnToken);
-  resolveAbort?.({ aborted: true });
-  await Promise.resolve();
-  await Promise.resolve();
-
-  expect(request.mock.calls.filter(([method]) => method === 'chat.send')).toHaveLength(0);
-  expect(adapter.activeTurns.get(session.id)).toBe(newTurn);
-  expect(session.status).toBe('running');
-  expect(
-    session.messages.some(
-      message => message.type === 'system' && message.content === t('taskPlanMutationBlocked'),
-    ),
-  ).toBe(false);
-});
-
-test('stale and identity-less terminals cannot complete a newer blocked plan turn', async () => {
-  const { session, store } = createReconcileStore([
-    { id: 'msg-1', type: 'user', content: 'plan the new turn', timestamp: 1, metadata: {} },
-  ]);
-  session.status = 'running';
-  const adapter = new OpenClawRuntimeAdapter(store, {});
-  const sessionKey = `agent:main:lobsterai:${session.id}`;
-  const request = vi.fn(async (method: string) => {
-    if (method === 'sessions.list') {
-      return {
-        sessions: [{ key: sessionKey, status: 'running', hasActiveRun: true }],
-      };
-    }
-    return {};
-  });
-  const newTurn = createActiveTurn(session.id, sessionKey, 'run-plan-new');
-  newTurn.turnToken = 2;
-  newTurn.planMode = true;
-  newTurn.planModeSafetyRecoveryPending = true;
-  newTurn.planModeSafetyRecoveryAbortedRunId = newTurn.runId;
-  adapter.gatewayClient = { start: () => {}, stop: () => {}, request };
-  adapter.activeTurns.set(session.id, newTurn);
-  adapter.latestTurnTokenBySession.set(session.id, newTurn.turnToken);
-
-  adapter.handleChatAborted(session.id, newTurn, 'run-plan-old');
-  adapter.handleAgentLifecycleEvent(
-    session.id,
-    { phase: 'end', runId: 'run-plan-old', aborted: true },
-    undefined,
-  );
-
-  expect(request).not.toHaveBeenCalled();
-  expect(adapter.activeTurns.get(session.id)).toBe(newTurn);
-  expect(newTurn.lastAttemptEndedAtMs).toBeUndefined();
-
-  adapter.handleAgentLifecycleEvent(session.id, { phase: 'end', aborted: true }, undefined);
-  await vi.waitFor(() => {
-    expect(request).toHaveBeenCalledWith(
-      'sessions.list',
-      { search: sessionKey, limit: 20 },
-      { timeoutMs: 5_000 },
-    );
-  });
-
-  expect(adapter.activeTurns.get(session.id)).toBe(newTurn);
-  expect(session.status).toBe('running');
-  expect(
-    session.messages.some(
-      message => message.type === 'system' && message.content === t('taskPlanMutationBlocked'),
-    ),
-  ).toBe(false);
-});
-
-test('repeated blocked mutation keeps one remote stop attempt pending without local cleanup', async () => {
-  const { session, store } = createReconcileStore([
-    { id: 'msg-1', type: 'user', content: 'plan a bakery website', timestamp: 1, metadata: {} },
-  ]);
-  session.status = 'running';
-  const adapter = new OpenClawRuntimeAdapter(store, {});
-  const sessionKey = `agent:main:lobsterai:${session.id}`;
-  const request = vi.fn(async (method: string) => {
-    if (method === 'chat.abort') {
-      return { aborted: false };
-    }
-    if (method === 'sessions.list') {
-      return {
-        sessions: [{ key: sessionKey, status: 'running', hasActiveRun: true }],
-      };
-    }
-    return {};
-  });
   const turn = createActiveTurn(session.id, sessionKey, 'run-plan-repeat');
   turn.planMode = true;
+  turn.planModeRecoveryAttempted = true;
   adapter.gatewayClient = { start: () => {}, stop: () => {}, request };
   adapter.activeTurns.set(session.id, turn);
 
-  adapter.handleAgentEvent(
-    {
-      runId: 'run-plan-repeat',
-      sessionKey,
-      stream: 'tool',
-      data: {
-        toolCallId: 'call-write',
-        phase: 'start',
-        name: 'write',
-        args: { path: '/tmp/index.html' },
-      },
+  adapter.handleAgentEvent({
+    runId: 'run-plan-repeat',
+    sessionKey,
+    stream: 'tool',
+    data: {
+      toolCallId: 'call-write',
+      phase: 'start',
+      name: 'write',
+      args: { path: '/tmp/index.html' },
     },
-    1,
-  );
-  await vi.waitFor(() => {
-    expect(request.mock.calls.some(([method]) => method === 'sessions.list')).toBe(true);
+  }, 1);
+  await Promise.resolve();
+
+  expect(request).toHaveBeenCalledWith('chat.abort', {
+    sessionKey,
+    runId: 'run-plan-repeat',
   });
-
-  adapter.handleAgentEvent(
-    {
-      runId: 'run-plan-repeat',
-      sessionKey,
-      stream: 'tool',
-      data: {
-        toolCallId: 'call-write-again',
-        phase: 'start',
-        name: 'write',
-        args: { path: '/tmp/again.html' },
-      },
-    },
-    2,
-  );
-
-  expect(request.mock.calls.filter(([method]) => method === 'chat.abort')).toHaveLength(1);
   expect(request.mock.calls.some(([method]) => method === 'chat.send')).toBe(false);
-  expect(session.messages.some(message => message.type === 'system')).toBe(false);
-  expect(session.status).toBe('running');
-  expect(adapter.activeTurns.get(session.id)).toBe(turn);
-  expect(turn.planModeSafetyRecoveryPending).toBe(true);
+  expect(session.messages.some((message) => message.type === 'system')).toBe(false);
+  expect(session.status).toBe('idle');
 });
 
 test.each(['write_file', 'create_file', 'delete_file', 'powershell'])(
@@ -8838,16 +7423,12 @@ test.each(['write_file', 'create_file', 'delete_file', 'powershell'])(
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(request).toHaveBeenCalledWith(
-      'chat.abort',
-      {
-        sessionKey,
-        runId: turn.runId,
-      },
-      { timeoutMs: 5_000 },
-    );
+    expect(request).toHaveBeenCalledWith('chat.abort', {
+      sessionKey,
+      runId: turn.runId,
+    });
     expect(turn.planModeSafetyRecoveryPending).toBe(true);
-    expect(session.messages.some(message => message.type === 'system')).toBe(false);
+    expect(session.messages.some((message) => message.type === 'system')).toBe(false);
     expect(session.status).toBe('running');
   },
 );
